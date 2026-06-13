@@ -4,12 +4,14 @@ import { useCallback, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { CloudUpload, FileVideo, ShieldCheck } from "lucide-react";
 import { API_URL } from "@/lib/api";
+import { generatePrototypeReport } from "@/lib/prototypeReport";
 
 export function UploadPanel() {
   const [file, setFile] = useState<File | null>(null);
   const [dragging, setDragging] = useState(false);
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState("");
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const router = useRouter();
 
@@ -30,23 +32,40 @@ export function UploadPanel() {
     form.append("file", file);
     setProgress(32);
     setError("");
+    setIsAnalyzing(true);
+    let timer: number | undefined;
 
     try {
-      const timer = window.setInterval(() => {
+      timer = window.setInterval(() => {
         setProgress((value) => Math.min(value + 9, 88));
       }, 420);
-      const response = await fetch(`${API_URL}/analyze`, {
-        method: "POST",
-        body: form,
-      });
+
+      let report;
+      if (API_URL) {
+        const controller = new AbortController();
+        const timeout = window.setTimeout(() => controller.abort(), 120000);
+        const response = await fetch(`${API_URL}/analyze`, {
+          method: "POST",
+          body: form,
+          signal: controller.signal,
+        });
+        window.clearTimeout(timeout);
+        if (!response.ok) throw new Error("Analysis failed");
+        report = await response.json();
+      } else {
+        report = await generatePrototypeReport(file);
+      }
+
       window.clearInterval(timer);
-      if (!response.ok) throw new Error("Analysis failed");
-      const report = await response.json();
+      sessionStorage.setItem(`truthlens:report:${report.id}`, JSON.stringify(report));
       setProgress(100);
       router.push(`/results/${report.id}`);
     } catch {
-      setError("Analysis service is unavailable. Check the FastAPI backend URL.");
+      setError(API_URL ? "Analysis service timed out or is unavailable. Check the FastAPI backend URL." : "Local prototype analysis failed for this file. Try a shorter MP4, MP3, or WAV sample.");
       setProgress(0);
+    } finally {
+      if (timer) window.clearInterval(timer);
+      setIsAnalyzing(false);
     }
   }
 
@@ -113,9 +132,10 @@ export function UploadPanel() {
         <button
           type="button"
           onClick={upload}
-          className="mt-6 w-full rounded-2xl bg-cyber-cyan px-6 py-4 text-base font-black text-slate-950 transition hover:-translate-y-0.5 hover:bg-cyan-300"
+          disabled={isAnalyzing}
+          className="mt-6 w-full rounded-2xl bg-cyber-cyan px-6 py-4 text-base font-black text-slate-950 transition hover:-translate-y-0.5 hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-60"
         >
-          Run TruthLens Analysis
+          {isAnalyzing ? "Analyzing evidence..." : "Run TruthLens Analysis"}
         </button>
       </div>
     </section>

@@ -5,6 +5,7 @@ __pycache__/
 venv/
 .env
 *.db
+*.log
 backend/storage/uploads/*
 backend/storage/frames/*
 !backend/storage/uploads/.gitkeep

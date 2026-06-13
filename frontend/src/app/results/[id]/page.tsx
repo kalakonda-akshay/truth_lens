@@ -1,6 +1,10 @@
+"use client";
+
 import Link from "next/link";
+import { useParams } from "next/navigation";
+import { useEffect, useState } from "react";
 import { AlertTriangle, ArrowLeft, Download, Eye, ShieldAlert } from "lucide-react";
-import { API_URL, fetchReport } from "@/lib/api";
+import { API_URL, fetchReport, type AnalysisReport } from "@/lib/api";
 import { MetricCard } from "@/components/MetricCard";
 
 function riskTone(risk: string): "green" | "amber" | "red" {
@@ -15,9 +19,103 @@ const riskClasses = {
   red: "text-cyber-red",
 };
 
-export default async function ResultsPage({ params }: { params: Promise<{ id: string }> }) {
-  const { id } = await params;
-  const report = await fetchReport(id);
+function frameSource(frameUrl: string) {
+  if (frameUrl.startsWith("data:") || frameUrl.startsWith("http")) return frameUrl;
+  return `${API_URL}${frameUrl}`;
+}
+
+async function downloadPdf(report: AnalysisReport) {
+  const { jsPDF } = await import("jspdf");
+  const doc = new jsPDF();
+  const lines = [
+    "TruthLens Synthetic Media Verification Report",
+    "",
+    `File: ${report.filename}`,
+    `Media Type: ${report.media_type}`,
+    `Authenticity Score: ${report.scores.authenticity_score}%`,
+    `Deepfake Probability: ${report.scores.deepfake_probability}%`,
+    `Risk Level: ${report.scores.risk_level}`,
+    `Confidence: ${report.scores.confidence_score}%`,
+    "",
+    "Metadata",
+    `File size: ${report.metadata.file_size_mb} MB`,
+    `Created/modified: ${new Date(report.metadata.creation_date).toLocaleString()}`,
+    `Codec: ${report.metadata.codec}`,
+    "",
+    "Evidence",
+    ...report.evidence.flatMap((item) => [`${item.label} [${item.severity}]`, item.detail, ""]),
+    report.awareness_message,
+  ];
+
+  let y = 18;
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(16);
+  doc.text(lines[0], 14, y);
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(10);
+  y += 10;
+
+  lines.slice(2).forEach((line) => {
+    const wrapped = doc.splitTextToSize(line, 180);
+    wrapped.forEach((wrappedLine: string) => {
+      if (y > 280) {
+        doc.addPage();
+        y = 18;
+      }
+      doc.text(wrappedLine, 14, y);
+      y += 6;
+    });
+  });
+
+  doc.save(`truthlens-${report.id}.pdf`);
+}
+
+export default function ResultsPage() {
+  const params = useParams<{ id: string }>();
+  const id = params.id;
+  const [report, setReport] = useState<AnalysisReport | null>(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    const stored = sessionStorage.getItem(`truthlens:report:${id}`);
+    if (stored) {
+      setReport(JSON.parse(stored));
+      return;
+    }
+
+    fetchReport(id)
+      .then((nextReport) => {
+        sessionStorage.setItem(`truthlens:report:${nextReport.id}`, JSON.stringify(nextReport));
+        setReport(nextReport);
+      })
+      .catch(() => setError("Report not found in this browser session. Run a new TruthLens analysis."));
+  }, [id]);
+
+  if (error) {
+    return (
+      <main className="cyber-grid flex min-h-screen items-center justify-center px-6">
+        <div className="glass max-w-xl rounded-[2rem] p-8 text-center">
+          <h1 className="text-3xl font-black text-white">Report unavailable</h1>
+          <p className="mt-4 text-slate-300">{error}</p>
+          <Link href="/" className="mt-6 inline-flex rounded-2xl bg-cyber-cyan px-6 py-3 font-black text-slate-950">
+            Run new analysis
+          </Link>
+        </div>
+      </main>
+    );
+  }
+
+  if (!report) {
+    return (
+      <main className="cyber-grid flex min-h-screen items-center justify-center px-6">
+        <div className="glass rounded-[2rem] p-8 text-center">
+          <p className="text-sm font-semibold uppercase tracking-[0.35em] text-cyber-cyan">Loading report</p>
+          <h1 className="mt-3 text-3xl font-black text-white">Preparing TruthLens evidence...</h1>
+        </div>
+      </main>
+    );
+  }
+
   const tone = riskTone(report.scores.risk_level);
 
   return (
@@ -28,10 +126,14 @@ export default async function ResultsPage({ params }: { params: Promise<{ id: st
             <ArrowLeft className="h-4 w-4" />
             New analysis
           </Link>
-          <a href={`${API_URL}/reports/${report.id}/pdf`} className="inline-flex items-center justify-center gap-2 rounded-2xl bg-cyber-cyan px-5 py-3 font-black text-slate-950">
+          <button
+            type="button"
+            onClick={() => downloadPdf(report)}
+            className="inline-flex items-center justify-center gap-2 rounded-2xl bg-cyber-cyan px-5 py-3 font-black text-slate-950"
+          >
             <Download className="h-4 w-4" />
             Download PDF report
-          </a>
+          </button>
         </div>
 
         <section className="mt-8 grid gap-6 lg:grid-cols-[1fr_0.8fr]">
@@ -39,7 +141,7 @@ export default async function ResultsPage({ params }: { params: Promise<{ id: st
             <p className="text-sm font-semibold uppercase tracking-[0.35em] text-cyber-cyan">TruthLens report</p>
             <h1 className="mt-4 break-words text-4xl font-black text-white md:text-5xl">{report.filename}</h1>
             <p className="mt-4 text-slate-300">
-              This explainable prototype report combines metadata, OpenCV visual signals, lip-sync scoring, and Librosa audio features.
+              This explainable prototype report combines metadata, visual signals, lip-sync scoring, and audio clone indicators.
             </p>
             <div className="mt-6 rounded-2xl border border-cyber-amber/30 bg-cyber-amber/10 p-4 text-cyber-amber">
               <div className="flex items-center gap-3 font-black">
@@ -77,7 +179,7 @@ export default async function ResultsPage({ params }: { params: Promise<{ id: st
               <p><span className="text-slate-500">File size:</span> {report.metadata.file_size_mb} MB</p>
               <p><span className="text-slate-500">Creation date:</span> {new Date(report.metadata.creation_date).toLocaleString()}</p>
               <p><span className="text-slate-500">Codec:</span> {report.metadata.codec}</p>
-              <p><span className="text-slate-500">Duration:</span> {report.metadata.duration_seconds ?? "N/A"} seconds</p>
+              <p><span className="text-slate-500">Duration:</span> {report.metadata.duration_seconds ?? "Prototype mode"} seconds</p>
             </div>
             <div className="mt-5 space-y-3">
               {report.metadata.tampering_indicators.map((indicator) => (
@@ -116,7 +218,7 @@ export default async function ResultsPage({ params }: { params: Promise<{ id: st
               {report.suspicious_frames.map((frame) => (
                 <div key={`${frame.timestamp_seconds}-${frame.score}`} className="overflow-hidden rounded-2xl border border-slate-700 bg-slate-950/70">
                   {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={`${API_URL}${frame.frame_url}`} alt={frame.reason} className="h-44 w-full object-cover" />
+                  <img src={frameSource(frame.frame_url)} alt={frame.reason} className="h-44 w-full object-cover" />
                   <div className="p-4">
                     <p className="font-black text-white">{frame.score}% anomaly</p>
                     <p className="mt-1 text-xs text-slate-400">{frame.timestamp_seconds}s - {frame.reason}</p>

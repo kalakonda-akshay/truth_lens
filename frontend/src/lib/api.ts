@@ -1,4 +1,4 @@
-export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+export const API_URL = (process.env.NEXT_PUBLIC_API_URL ?? "").replace(/\/$/, "");
 
 export type AnalysisReport = {
   id: string;
@@ -36,6 +36,9 @@ export type AnalysisReport = {
 };
 
 export async function fetchReport(id: string): Promise<AnalysisReport> {
+  if (!API_URL) {
+    throw new Error("No external API configured");
+  }
   const response = await fetch(`${API_URL}/reports/${id}`, { cache: "no-store" });
   if (!response.ok) {
     throw new Error("Unable to load report");
