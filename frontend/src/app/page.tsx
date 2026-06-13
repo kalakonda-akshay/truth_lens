@@ -1,7 +1,13 @@
-import { Activity, AudioWaveform, BrainCircuit, Fingerprint, LockKeyhole, Radar } from "lucide-react";
+import { Activity, AudioWaveform, BrainCircuit, Fingerprint, ImageIcon, LockKeyhole, Radar } from "lucide-react";
 import { UploadPanel } from "@/components/UploadPanel";
+import { DemoCenter } from "@/components/DemoCenter";
 
 const features = [
+  {
+    icon: ImageIcon,
+    title: "Image Forensics",
+    body: "Inspects JPG, PNG, JPEG, and WEBP files for EXIF gaps, texture artifacts, lighting shifts, edge anomalies, and anatomical irregularities.",
+  },
   {
     icon: Fingerprint,
     title: "Metadata Scanner",
@@ -10,7 +16,7 @@ const features = [
   {
     icon: Radar,
     title: "Face Analysis",
-    body: "Uses OpenCV frame extraction and anomaly highlighting for suspicious visual evidence.",
+    body: "Uses OpenCV frame extraction and region highlighting for suspicious visual evidence.",
   },
   {
     icon: Activity,
@@ -34,9 +40,12 @@ export default function Home() {
           </div>
           <span className="text-xl font-black tracking-tight">TruthLens</span>
         </div>
-        <a href="#upload" className="rounded-full border border-cyber-cyan/40 px-5 py-2 text-sm font-bold text-cyber-cyan transition hover:bg-cyber-cyan hover:text-slate-950">
-          Upload media
-        </a>
+        <div className="flex items-center gap-3">
+          <a href="#judge-mode" className="hidden text-sm font-bold text-cyber-green sm:block">Judge Mode</a>
+          <a href="#upload" className="rounded-full border border-cyber-cyan/40 px-5 py-2 text-sm font-bold text-cyber-cyan transition hover:bg-cyber-cyan hover:text-slate-950">
+            Upload media
+          </a>
+        </div>
       </nav>
 
       <section className="mx-auto grid max-w-7xl gap-10 px-6 pb-10 pt-12 lg:grid-cols-[1.08fr_0.92fr] lg:items-center">
@@ -46,7 +55,7 @@ export default function Home() {
             Verify deepfakes before they become cyber incidents.
           </h1>
           <p className="mt-6 max-w-2xl text-lg leading-8 text-slate-300">
-            TruthLens combines metadata scanning, visual anomaly checks, lip-sync scoring, and audio clone detection into one explainable media risk report.
+            TruthLens automatically classifies images, video, and audio, then combines metadata, visual anomalies, lip-sync checks, and voice analysis into one explainable risk report.
           </p>
           <div className="mt-8 flex flex-col gap-3 sm:flex-row">
             <a href="#upload" className="rounded-2xl bg-cyber-cyan px-7 py-4 text-center font-black text-slate-950 transition hover:-translate-y-0.5 hover:bg-cyan-300">
@@ -68,7 +77,7 @@ export default function Home() {
               </div>
               <BrainCircuit className="h-10 w-10 text-cyber-cyan" />
             </div>
-            {["Metadata integrity", "Visual anomaly scan", "Lip-sync coherence", "Voice clone texture"].map((label, index) => (
+            {["Metadata integrity", "Image/video anomaly scan", "Lip-sync coherence", "Voice clone texture"].map((label, index) => (
               <div key={label} className="mb-5">
                 <div className="mb-2 flex justify-between text-sm">
                   <span className="text-slate-300">{label}</span>
@@ -87,6 +96,7 @@ export default function Home() {
       </section>
 
       <UploadPanel />
+      <DemoCenter />
 
       <section id="features" className="mx-auto max-w-7xl px-6 py-20">
         <div className="max-w-3xl">
@@ -96,7 +106,7 @@ export default function Home() {
             Designed for security teams, educators, and incident responders who need a fast first-pass signal before sharing sensitive media.
           </p>
         </div>
-        <div className="mt-10 grid gap-5 md:grid-cols-2 lg:grid-cols-4">
+        <div className="mt-10 grid gap-5 md:grid-cols-2 lg:grid-cols-5">
           {features.map((feature) => (
             <div key={feature.title} className="glass rounded-3xl p-6 transition hover:-translate-y-1 hover:border-cyber-cyan/50">
               <feature.icon className="h-8 w-8 text-cyber-cyan" />

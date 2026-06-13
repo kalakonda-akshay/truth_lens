@@ -1,10 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useSearchParams } from "next/navigation";
 import { useEffect, useState } from "react";
-import { AlertTriangle, ArrowLeft, Download, Eye, ShieldAlert } from "lucide-react";
-import { API_URL, fetchReport, type AnalysisReport } from "@/lib/api";
+import { AlertTriangle, ArrowLeft, CheckCircle2, Download, Eye, ScanSearch, ShieldAlert, Sparkles } from "lucide-react";
+import { API_URL, fetchReport, normalizeReport, type AnalysisReport } from "@/lib/api";
 import { MetricCard } from "@/components/MetricCard";
 
 function riskTone(risk: string): "green" | "amber" | "red" {
@@ -32,8 +32,9 @@ async function downloadPdf(report: AnalysisReport) {
     "",
     `File: ${report.filename}`,
     `Media Type: ${report.media_type}`,
+    `Decision: ${report.verdict}`,
     `Authenticity Score: ${report.scores.authenticity_score}%`,
-    `Deepfake Probability: ${report.scores.deepfake_probability}%`,
+    `AI/Synthetic Probability: ${report.scores.deepfake_probability}%`,
     `Risk Level: ${report.scores.risk_level}`,
     `Confidence: ${report.scores.confidence_score}%`,
     "",
@@ -41,9 +42,17 @@ async function downloadPdf(report: AnalysisReport) {
     `File size: ${report.metadata.file_size_mb} MB`,
     `Created/modified: ${new Date(report.metadata.creation_date).toLocaleString()}`,
     `Codec: ${report.metadata.codec}`,
+    `Camera: ${report.metadata.camera_information}`,
+    `Editing software: ${report.metadata.editing_software}`,
+    "",
+    "Reasons for Decision",
+    ...report.reasons_for_decision.map((reason) => `- ${reason}`),
     "",
     "Evidence",
     ...report.evidence.flatMap((item) => [`${item.label} [${item.severity}]`, item.detail, ""]),
+    "Recommendations",
+    ...report.recommendations.map((recommendation) => `- ${recommendation}`),
+    "",
     report.awareness_message,
   ];
 
@@ -72,14 +81,16 @@ async function downloadPdf(report: AnalysisReport) {
 
 export default function ResultsPage() {
   const params = useParams<{ id: string }>();
+  const searchParams = useSearchParams();
   const id = params.id;
+  const judgeMode = searchParams.get("judge") === "1";
   const [report, setReport] = useState<AnalysisReport | null>(null);
   const [error, setError] = useState("");
 
   useEffect(() => {
     const stored = sessionStorage.getItem(`truthlens:report:${id}`);
     if (stored) {
-      setReport(JSON.parse(stored));
+      setReport(normalizeReport(JSON.parse(stored)));
       return;
     }
 
@@ -121,6 +132,12 @@ export default function ResultsPage() {
   return (
     <main className="cyber-grid min-h-screen px-6 py-8">
       <div className="mx-auto max-w-7xl">
+        {judgeMode && (
+          <div className="mb-6 flex items-center gap-3 rounded-2xl border border-cyber-cyan/30 bg-cyber-cyan/10 px-5 py-4 text-cyber-cyan">
+            <Sparkles className="h-5 w-5" />
+            <p className="font-black">Cyberathon Judge Mode · Guided sample forensic report</p>
+          </div>
+        )}
         <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
           <Link href="/" className="inline-flex items-center gap-2 text-sm font-bold text-cyber-cyan">
             <ArrowLeft className="h-4 w-4" />
@@ -143,6 +160,14 @@ export default function ResultsPage() {
             <p className="mt-4 text-slate-300">
               This explainable prototype report combines metadata, visual signals, lip-sync scoring, and audio clone indicators.
             </p>
+            <div className="mt-6 flex flex-wrap gap-3">
+              <span className="rounded-full border border-cyber-cyan/30 bg-cyber-cyan/10 px-4 py-2 text-sm font-black text-cyber-cyan">
+                Detected Media Type: {report.media_type.toUpperCase()}
+              </span>
+              <span className="rounded-full border border-white/15 bg-white/5 px-4 py-2 text-sm font-black text-white">
+                {report.verdict}
+              </span>
+            </div>
             <div className="mt-6 rounded-2xl border border-cyber-amber/30 bg-cyber-amber/10 p-4 text-cyber-amber">
               <div className="flex items-center gap-3 font-black">
                 <AlertTriangle className="h-5 w-5" />
@@ -167,7 +192,7 @@ export default function ResultsPage() {
 
         <section className="mt-6 grid gap-5 md:grid-cols-2 lg:grid-cols-4">
           <MetricCard label="Authenticity" value={`${report.scores.authenticity_score}%`} tone="green" />
-          <MetricCard label="Deepfake probability" value={`${report.scores.deepfake_probability}%`} tone={tone} />
+          <MetricCard label={report.media_type === "image" ? "AI probability" : "Synthetic probability"} value={`${report.scores.deepfake_probability}%`} tone={tone} />
           <MetricCard label="Confidence" value={`${report.scores.confidence_score}%`} tone="cyan" />
           <MetricCard label="Media type" value={report.media_type.toUpperCase()} tone="cyan" />
         </section>
@@ -180,7 +205,19 @@ export default function ResultsPage() {
               <p><span className="text-slate-500">Creation date:</span> {new Date(report.metadata.creation_date).toLocaleString()}</p>
               <p><span className="text-slate-500">Codec:</span> {report.metadata.codec}</p>
               <p><span className="text-slate-500">Duration:</span> {report.metadata.duration_seconds ?? "Prototype mode"} seconds</p>
+              <p><span className="text-slate-500">Camera:</span> {report.metadata.camera_information}</p>
+              <p><span className="text-slate-500">Editing software:</span> {report.metadata.editing_software}</p>
             </div>
+            {Object.keys(report.metadata.exif_data).length > 0 && (
+              <div className="mt-5 rounded-2xl border border-slate-700 bg-slate-950/50 p-4">
+                <p className="font-black text-white">EXIF Data</p>
+                <div className="mt-3 grid gap-2 text-xs text-slate-400 sm:grid-cols-2">
+                  {Object.entries(report.metadata.exif_data).slice(0, 8).map(([key, value]) => (
+                    <p key={key}><span className="text-slate-500">{key}:</span> {value}</p>
+                  ))}
+                </div>
+              </div>
+            )}
             <div className="mt-5 space-y-3">
               {report.metadata.tampering_indicators.map((indicator) => (
                 <div key={indicator} className="rounded-2xl border border-slate-700 bg-slate-950/50 p-3 text-sm text-slate-300">
@@ -206,13 +243,61 @@ export default function ResultsPage() {
           </div>
         </section>
 
+        <section className="mt-6 grid gap-6 lg:grid-cols-2">
+          <div className="glass rounded-[2rem] p-7">
+            <div className="flex items-center gap-3">
+              <ScanSearch className="h-6 w-6 text-cyber-cyan" />
+              <h2 className="text-2xl font-black text-white">Reasons for decision</h2>
+            </div>
+            <div className="mt-5 grid gap-3 sm:grid-cols-2">
+              {report.reasons_for_decision.map((reason) => (
+                <div key={reason} className="flex items-center gap-3 rounded-2xl border border-slate-700 bg-slate-950/60 p-4">
+                  <CheckCircle2 className="h-5 w-5 shrink-0 text-cyber-green" />
+                  <p className="text-sm font-semibold text-slate-200">{reason}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="glass rounded-[2rem] p-7">
+            <h2 className="text-2xl font-black text-white">Recommendations</h2>
+            <div className="mt-5 space-y-3">
+              {report.recommendations.map((recommendation, index) => (
+                <div key={recommendation} className="flex gap-3 rounded-2xl border border-slate-700 bg-slate-950/60 p-4">
+                  <span className="font-black text-cyber-cyan">{String(index + 1).padStart(2, "0")}</span>
+                  <p className="text-sm leading-6 text-slate-300">{recommendation}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        {report.media_type === "image" && Object.keys(report.image_forensics).length > 0 && (
+          <section className="mt-6 glass rounded-[2rem] p-7">
+            <h2 className="text-2xl font-black text-white">Image forensics module</h2>
+            <p className="mt-2 text-sm text-slate-400">{String(report.image_forensics.summary ?? "")}</p>
+            <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+              {[
+                ["Texture inconsistencies", report.image_forensics.texture_inconsistency],
+                ["Lighting inconsistencies", report.image_forensics.lighting_inconsistency],
+                ["Edge anomalies", report.image_forensics.edge_anomaly],
+                ["Face/finger irregularities", report.image_forensics.face_or_finger_irregularity],
+              ].map(([label, value]) => (
+                <div key={String(label)} className="rounded-2xl border border-slate-700 bg-slate-950/60 p-5">
+                  <p className="text-sm text-slate-400">{label}</p>
+                  <p className="mt-3 text-3xl font-black text-cyber-cyan">{String(value ?? 0)}%</p>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+
         <section className="mt-6 glass rounded-[2rem] p-7">
           <div className="flex items-center gap-3">
             <Eye className="h-6 w-6 text-cyber-cyan" />
-            <h2 className="text-2xl font-black text-white">Suspicious frames</h2>
+            <h2 className="text-2xl font-black text-white">{report.media_type === "image" ? "Suspicious regions & heatmap" : "Suspicious frames"}</h2>
           </div>
           {report.suspicious_frames.length === 0 ? (
-            <p className="mt-5 text-slate-400">No suspicious video frames were extracted for this media file.</p>
+            <p className="mt-5 text-slate-400">No suspicious visual regions were extracted for this media file.</p>
           ) : (
             <div className="mt-6 grid gap-5 md:grid-cols-2 lg:grid-cols-4">
               {report.suspicious_frames.map((frame) => (

@@ -1,6 +1,6 @@
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class ScoreCard(BaseModel):
@@ -16,6 +16,9 @@ class MetadataReport(BaseModel):
     codec: str
     duration_seconds: float | None
     tampering_indicators: list[str]
+    camera_information: str = "Not available"
+    editing_software: str = "Not detected"
+    exif_data: dict[str, str] = Field(default_factory=dict)
 
 
 class EvidenceItem(BaseModel):
@@ -41,6 +44,15 @@ class AnalysisReport(BaseModel):
     face_analysis: dict[str, Any]
     lip_sync_analysis: dict[str, Any]
     audio_clone_detection: dict[str, Any]
+    image_forensics: dict[str, Any] = Field(default_factory=dict)
     suspicious_frames: list[SuspiciousFrame]
     evidence: list[EvidenceItem]
+    verdict: str = "Needs Review"
+    reasons_for_decision: list[str] = Field(default_factory=list)
+    recommendations: list[str] = Field(
+        default_factory=lambda: [
+            "Verify the media source before sharing.",
+            "Request the original file when making high-impact decisions.",
+        ]
+    )
     awareness_message: str = "Do not forward unverified media"

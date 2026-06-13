@@ -16,13 +16,15 @@ def build_pdf(report: AnalysisReport) -> bytes:
         Paragraph("TruthLens Synthetic Media Verification Report", styles["Title"]),
         Spacer(1, 12),
         Paragraph(f"File: {report.filename}", styles["Normal"]),
+        Paragraph(f"Detected media type: {report.media_type.title()}", styles["Normal"]),
+        Paragraph(f"Decision: {report.verdict}", styles["Normal"]),
         Paragraph(f"Awareness: {report.awareness_message}", styles["Normal"]),
         Spacer(1, 12),
     ]
 
     score_table = Table(
         [
-            ["Authenticity", "Deepfake Probability", "Risk Level", "Confidence"],
+            ["Authenticity", "AI/Synthetic Probability", "Risk Level", "Confidence"],
             [
                 f"{report.scores.authenticity_score}%",
                 f"{report.scores.deepfake_probability}%",
@@ -51,6 +53,14 @@ def build_pdf(report: AnalysisReport) -> bytes:
     story.append(Paragraph(f"Codec: {report.metadata.codec}", styles["BodyText"]))
     story.append(Paragraph(f"File size: {report.metadata.file_size_mb} MB", styles["BodyText"]))
     story.append(Paragraph(f"Duration: {report.metadata.duration_seconds or 'N/A'} seconds", styles["BodyText"]))
+    story.append(Paragraph(f"Camera: {report.metadata.camera_information}", styles["BodyText"]))
+    story.append(Paragraph(f"Editing software: {report.metadata.editing_software}", styles["BodyText"]))
+    story.extend([Spacer(1, 8), Paragraph("Reasons for Decision", styles["Heading2"])])
+    for reason in report.reasons_for_decision:
+        story.append(Paragraph(f"- {reason}", styles["BodyText"]))
+    story.extend([Spacer(1, 8), Paragraph("Recommendations", styles["Heading2"])])
+    for recommendation in report.recommendations:
+        story.append(Paragraph(f"- {recommendation}", styles["BodyText"]))
     story.append(Paragraph("This report is a prototype forensic aid and should be reviewed by a qualified analyst for high-impact decisions.", styles["Italic"]))
     doc.build(story)
     return buffer.getvalue()

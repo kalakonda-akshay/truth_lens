@@ -6,19 +6,25 @@ TruthLens is an AI-powered Deepfake and Synthetic Media Verification Platform bu
 
 - Frontend: Next.js 15, React, TypeScript, Tailwind CSS
 - Backend: FastAPI, SQLite
-- Media analysis: OpenCV, Librosa, MoviePy fallback utilities
+- Media analysis: OpenCV, Pillow/EXIF, Librosa, browser-safe canvas forensics
 - Deployment: Vercel for frontend, Render/Railway for backend
 
 ## Features
 
 - Cybersecurity-themed landing page
-- Drag-and-drop upload dashboard for video/audio
-- Metadata scanner with codec and tampering indicators
+- Unified drag-and-drop upload for JPG, JPEG, PNG, WEBP, video, and audio
+- Automatic image/video/audio classification and routing
+- Metadata scanner with EXIF, camera, editing software, codec, and tampering indicators
+- Image forensics for texture, lighting, edge, and face/finger irregularities
+- Suspicious-region bounding boxes and heatmap overlays
 - OpenCV frame extraction with suspicious-frame simulation
 - Lip-sync forensic scoring
 - Librosa-based audio clone confidence scoring
 - Authenticity score, deepfake probability, and risk level
-- Results page with evidence, suspicious frames, awareness banner, and PDF download
+- Evidence-first results page with verdict reasons and recommendations
+- Cyberathon Judge Mode with six built-in image/video/audio sample reports
+- Session dashboard for total, media-type, and high-risk scan counts
+- Improved PDF reports with summary, evidence, risk, and recommendations
 
 ## Local Development
 
@@ -65,7 +71,7 @@ Set `ALLOWED_ORIGINS` to the deployed Vercel URL.
 
 ## Frontend Deployment
 
-Deploy `frontend/` to Vercel and set:
+Deploy `frontend/` to Vercel. It runs in standalone browser-safe prototype mode when no backend is configured. For OpenCV, EXIF, and Librosa backend analysis, set:
 
 ```bash
 NEXT_PUBLIC_API_URL=https://your-backend-url

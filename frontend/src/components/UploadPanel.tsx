@@ -2,9 +2,18 @@
 
 import { useCallback, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { CloudUpload, FileVideo, ShieldCheck } from "lucide-react";
-import { API_URL } from "@/lib/api";
+import { CloudUpload, FileAudio, FileImage, FileVideo, ShieldCheck } from "lucide-react";
+import { API_URL, normalizeReport } from "@/lib/api";
 import { generatePrototypeReport } from "@/lib/prototypeReport";
+import { recordScan } from "@/lib/scanStats";
+
+function detectMediaType(file: File) {
+  const extension = file.name.split(".").pop()?.toLowerCase();
+  if (file.type.startsWith("image/") || ["jpg", "jpeg", "png", "webp"].includes(extension ?? "")) return "Image";
+  if (file.type.startsWith("audio/") || ["mp3", "wav", "m4a", "ogg", "flac", "aac"].includes(extension ?? "")) return "Audio";
+  if (file.type.startsWith("video/") || ["mp4", "mov", "webm", "mkv", "avi"].includes(extension ?? "")) return "Video";
+  return "";
+}
 
 export function UploadPanel() {
   const [file, setFile] = useState<File | null>(null);
@@ -14,9 +23,16 @@ export function UploadPanel() {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const router = useRouter();
+  const detectedType = file ? detectMediaType(file) : "";
 
   const selectFile = useCallback((nextFile?: File) => {
     if (!nextFile) return;
+    if (!detectMediaType(nextFile)) {
+      setFile(null);
+      setProgress(0);
+      setError("Unsupported file. Upload JPG, JPEG, PNG, WEBP, common video, or common audio formats.");
+      return;
+    }
     setError("");
     setFile(nextFile);
     setProgress(12);
@@ -24,7 +40,7 @@ export function UploadPanel() {
 
   async function upload() {
     if (!file) {
-      setError("Choose a video or audio file first.");
+      setError("Choose an image, video, or audio file first.");
       return;
     }
 
@@ -51,17 +67,18 @@ export function UploadPanel() {
         });
         window.clearTimeout(timeout);
         if (!response.ok) throw new Error("Analysis failed");
-        report = await response.json();
+        report = normalizeReport(await response.json());
       } else {
         report = await generatePrototypeReport(file);
       }
 
       window.clearInterval(timer);
       sessionStorage.setItem(`truthlens:report:${report.id}`, JSON.stringify(report));
+      recordScan(report.media_type, report.scores.risk_level);
       setProgress(100);
       router.push(`/results/${report.id}`);
     } catch {
-      setError(API_URL ? "Analysis service timed out or is unavailable. Check the FastAPI backend URL." : "Local prototype analysis failed for this file. Try a shorter MP4, MP3, or WAV sample.");
+      setError(API_URL ? "Analysis service timed out or is unavailable. Check the FastAPI backend URL." : "Local prototype analysis failed for this file. Try a JPG, PNG, shorter MP4, MP3, or WAV sample.");
       setProgress(0);
     } finally {
       if (timer) window.clearInterval(timer);
@@ -103,22 +120,30 @@ export function UploadPanel() {
           <input
             ref={inputRef}
             type="file"
-            accept="video/*,audio/*"
+            accept="image/jpeg,image/png,image/webp,video/*,audio/*"
             className="hidden"
             onChange={(event) => selectFile(event.target.files?.[0])}
           />
           <CloudUpload className="h-14 w-14 text-cyber-cyan" />
-          <p className="mt-4 text-xl font-bold text-white">Drag and drop video/audio evidence</p>
-          <p className="mt-2 max-w-xl text-sm text-slate-400">MP4, MOV, WEBM, MP3, WAV, M4A and other common media formats are supported.</p>
+          <p className="mt-4 text-xl font-bold text-white">Drag and drop image, video, or audio evidence</p>
+          <p className="mt-2 max-w-xl text-sm text-slate-400">JPG, PNG, WEBP, MP4, MOV, WEBM, MP3, WAV, M4A and other common formats are supported.</p>
         </button>
 
         {file && (
           <div className="mt-6 rounded-2xl border border-slate-700 bg-slate-950/70 p-4">
             <div className="flex items-center gap-3">
-              <FileVideo className="h-5 w-5 text-cyber-cyan" />
+              {detectedType === "Image" ? (
+                <FileImage className="h-5 w-5 text-cyber-cyan" />
+              ) : detectedType === "Audio" ? (
+                <FileAudio className="h-5 w-5 text-cyber-cyan" />
+              ) : (
+                <FileVideo className="h-5 w-5 text-cyber-cyan" />
+              )}
               <div>
                 <p className="font-semibold text-white">{file.name}</p>
-                <p className="text-sm text-slate-400">{(file.size / (1024 * 1024)).toFixed(2)} MB</p>
+                <p className="text-sm text-slate-400">
+                  {(file.size / (1024 * 1024)).toFixed(2)} MB · Detected Media Type: {detectedType}
+                </p>
               </div>
             </div>
             <div className="mt-4 h-3 overflow-hidden rounded-full bg-slate-800">
