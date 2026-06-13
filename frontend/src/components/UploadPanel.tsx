@@ -1,0 +1,123 @@
+"use client";
+
+import { useCallback, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
+import { CloudUpload, FileVideo, ShieldCheck } from "lucide-react";
+import { API_URL } from "@/lib/api";
+
+export function UploadPanel() {
+  const [file, setFile] = useState<File | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [error, setError] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+  const router = useRouter();
+
+  const selectFile = useCallback((nextFile?: File) => {
+    if (!nextFile) return;
+    setError("");
+    setFile(nextFile);
+    setProgress(12);
+  }, []);
+
+  async function upload() {
+    if (!file) {
+      setError("Choose a video or audio file first.");
+      return;
+    }
+
+    const form = new FormData();
+    form.append("file", file);
+    setProgress(32);
+    setError("");
+
+    try {
+      const timer = window.setInterval(() => {
+        setProgress((value) => Math.min(value + 9, 88));
+      }, 420);
+      const response = await fetch(`${API_URL}/analyze`, {
+        method: "POST",
+        body: form,
+      });
+      window.clearInterval(timer);
+      if (!response.ok) throw new Error("Analysis failed");
+      const report = await response.json();
+      setProgress(100);
+      router.push(`/results/${report.id}`);
+    } catch {
+      setError("Analysis service is unavailable. Check the FastAPI backend URL.");
+      setProgress(0);
+    }
+  }
+
+  return (
+    <section id="upload" className="mx-auto mt-16 max-w-5xl px-6">
+      <div className="glass rounded-[2rem] p-6 shadow-glow md:p-8">
+        <div className="mb-6 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+          <div>
+            <p className="text-sm font-semibold uppercase tracking-[0.35em] text-cyber-cyan">Upload dashboard</p>
+            <h2 className="mt-3 text-3xl font-black text-white md:text-4xl">Verify suspicious media</h2>
+          </div>
+          <div className="flex items-center gap-2 rounded-full border border-cyber-green/30 bg-cyber-green/10 px-4 py-2 text-sm text-cyber-green">
+            <ShieldCheck className="h-4 w-4" />
+            Explainable AI report
+          </div>
+        </div>
+
+        <button
+          type="button"
+          onClick={() => inputRef.current?.click()}
+          onDragOver={(event) => {
+            event.preventDefault();
+            setDragging(true);
+          }}
+          onDragLeave={() => setDragging(false)}
+          onDrop={(event) => {
+            event.preventDefault();
+            setDragging(false);
+            selectFile(event.dataTransfer.files[0]);
+          }}
+          className={`flex w-full flex-col items-center justify-center rounded-3xl border border-dashed p-10 text-center transition ${
+            dragging ? "border-cyber-cyan bg-cyber-cyan/10" : "border-slate-600 bg-slate-950/50 hover:border-cyber-cyan/70"
+          }`}
+        >
+          <input
+            ref={inputRef}
+            type="file"
+            accept="video/*,audio/*"
+            className="hidden"
+            onChange={(event) => selectFile(event.target.files?.[0])}
+          />
+          <CloudUpload className="h-14 w-14 text-cyber-cyan" />
+          <p className="mt-4 text-xl font-bold text-white">Drag and drop video/audio evidence</p>
+          <p className="mt-2 max-w-xl text-sm text-slate-400">MP4, MOV, WEBM, MP3, WAV, M4A and other common media formats are supported.</p>
+        </button>
+
+        {file && (
+          <div className="mt-6 rounded-2xl border border-slate-700 bg-slate-950/70 p-4">
+            <div className="flex items-center gap-3">
+              <FileVideo className="h-5 w-5 text-cyber-cyan" />
+              <div>
+                <p className="font-semibold text-white">{file.name}</p>
+                <p className="text-sm text-slate-400">{(file.size / (1024 * 1024)).toFixed(2)} MB</p>
+              </div>
+            </div>
+            <div className="mt-4 h-3 overflow-hidden rounded-full bg-slate-800">
+              <div className="h-full rounded-full bg-gradient-to-r from-cyber-cyan to-cyber-green transition-all" style={{ width: `${progress}%` }} />
+            </div>
+          </div>
+        )}
+
+        {error && <p className="mt-4 text-sm text-cyber-red">{error}</p>}
+
+        <button
+          type="button"
+          onClick={upload}
+          className="mt-6 w-full rounded-2xl bg-cyber-cyan px-6 py-4 text-base font-black text-slate-950 transition hover:-translate-y-0.5 hover:bg-cyan-300"
+        >
+          Run TruthLens Analysis
+        </button>
+      </div>
+    </section>
+  );
+}
