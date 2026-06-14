@@ -40,6 +40,7 @@ export type AnalysisReport = {
     severity: string;
   }>;
   verdict: string;
+  ai_classification: "AI Generated" | "Likely AI Generated" | "Manipulated" | "Authentic" | "Unable To Determine" | string;
   analysis_summary: string;
   key_findings: string[];
   conclusion: string;
@@ -65,6 +66,7 @@ export function normalizeReport(report: AnalysisReport): AnalysisReport {
     url_analysis: report.url_analysis ?? {},
     email_analysis: report.email_analysis ?? {},
     verdict: report.verdict ?? (report.scores.deepfake_probability >= 70 ? "Likely Synthetic" : "Needs Verification"),
+    ai_classification: report.ai_classification ?? classifyAiProbability(report.scores.deepfake_probability),
     analysis_summary: report.analysis_summary ?? "Automated TruthLens forensic analysis completed.",
     key_findings: report.key_findings ?? report.evidence.map((item) => item.detail),
     conclusion: report.conclusion ?? "Results are probabilistic and should be reviewed before high-impact decisions.",
@@ -74,6 +76,14 @@ export function normalizeReport(report: AnalysisReport): AnalysisReport {
       "Request the original file when making high-impact decisions.",
     ],
   };
+}
+
+export function classifyAiProbability(probability: number) {
+  if (probability > 75) return "AI Generated";
+  if (probability >= 50) return "Likely AI Generated";
+  if (probability >= 25) return "Manipulated";
+  if (probability >= 0) return "Authentic";
+  return "Unable To Determine";
 }
 
 export async function fetchTextAnalysis(kind: "url" | "email", content: string): Promise<AnalysisReport> {

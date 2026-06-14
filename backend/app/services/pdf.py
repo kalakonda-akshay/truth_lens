@@ -78,6 +78,18 @@ def _score_cards(report: AnalysisReport) -> Table:
     return table
 
 
+def _classification_color(classification: str) -> str:
+    if classification == "AI Generated":
+        return "#dc2626"
+    if classification == "Likely AI Generated":
+        return "#f97316"
+    if classification == "Manipulated":
+        return "#facc15"
+    if classification == "Authentic":
+        return "#059669"
+    return "#94a3b8"
+
+
 def _draw_shell(canvas, doc, report: AnalysisReport):
     canvas.saveState()
     width, height = letter
@@ -159,12 +171,31 @@ def build_pdf(report: AnalysisReport) -> bytes:
                 ["Analysis Performed", report.analysis_summary],
                 ["Overall Authenticity", f"{report.scores.authenticity_score}%"],
                 ["AI Generated Probability", f"{report.scores.deepfake_probability}%"],
+                ["AI Generated Classification", report.ai_classification.upper()],
                 ["Risk Level", report.scores.risk_level.upper()],
             ],
             "#083344",
         ),
         Spacer(1, 8),
         _score_cards(report),
+        Spacer(1, 8),
+        Table(
+            [["AI CLASSIFICATION", report.ai_classification.upper()]],
+            colWidths=[2.25 * inch, 4.65 * inch],
+            style=TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (0, 0), colors.HexColor("#031225")),
+                    ("TEXTCOLOR", (0, 0), (0, 0), colors.white),
+                    ("BACKGROUND", (1, 0), (1, 0), colors.HexColor(_classification_color(report.ai_classification))),
+                    ("TEXTCOLOR", (1, 0), (1, 0), colors.white if report.ai_classification != "Manipulated" else colors.HexColor("#0f172a")),
+                    ("FONTNAME", (0, 0), (-1, -1), "Helvetica-Bold"),
+                    ("FONTSIZE", (0, 0), (-1, -1), 14),
+                    ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                    ("BOX", (0, 0), (-1, -1), 0.75, colors.HexColor("#cbd5e1")),
+                    ("PADDING", (0, 0), (-1, -1), 12),
+                ]
+            ),
+        ),
         Spacer(1, 8),
         _section(
             "1. METADATA ANALYSIS",

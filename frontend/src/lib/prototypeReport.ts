@@ -1,4 +1,4 @@
-import type { AnalysisReport } from "@/lib/api";
+import { classifyAiProbability, type AnalysisReport } from "@/lib/api";
 
 function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, Math.round(value)));
@@ -63,6 +63,7 @@ function baseReport(file: File, mediaType: string, probability: number, findings
     suspicious_frames: frames,
     evidence,
     verdict: probability >= 65 ? "High-Risk Evidence Detected" : probability >= 35 ? "Review Recommended" : "No Strong Threat Indicators Detected",
+    ai_classification: classifyAiProbability(mediaType === "url" || mediaType === "email" ? 0 : probability),
     analysis_summary: `${mediaType.toUpperCase()} analysis completed using measured browser-accessible forensic indicators only.`,
     key_findings: keyFindings,
     conclusion: probability >= 35 ? "Risk indicators were detected; human verification is recommended before trust or sharing." : "No high-risk indicators were detected; normal source verification is still recommended.",
@@ -358,6 +359,7 @@ function baseTextReport(input: string, kind: "url" | "email", score: number, ind
     suspicious_frames: [],
     evidence,
     verdict,
+    ai_classification: classifyAiProbability(0),
     analysis_summary: `${kind.toUpperCase()} analysis completed using matched threat indicators.`,
     key_findings: evidence.length ? evidence.map((item) => item.detail) : ["No high-risk text indicators were detected."],
     conclusion: score >= 35 ? "Threat indicators were detected; verify through an independent channel." : "No high-risk indicators were detected.",

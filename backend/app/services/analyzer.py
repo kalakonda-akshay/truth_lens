@@ -27,6 +27,18 @@ DISCLAIMER_RECOMMENDATIONS = [
 ]
 
 
+def ai_classification(probability: int) -> str:
+    if probability > 75:
+        return "AI Generated"
+    if probability >= 50:
+        return "Likely AI Generated"
+    if probability >= 25:
+        return "Manipulated"
+    if probability >= 0:
+        return "Authentic"
+    return "Unable To Determine"
+
+
 def _media_type(path: Path, content_type: str | None) -> str:
     if path.suffix.lower() in IMAGE_EXTENSIONS or (content_type or "").startswith("image/"):
         return "image"
@@ -360,6 +372,7 @@ def analyze_url_text(raw_url: str) -> AnalysisReport:
         suspicious_frames=[],
         evidence=[EvidenceItem(label="URL Indicator", detail=item, severity=level) for item in indicators if not item.startswith("No ")],
         verdict="Likely Phishing" if score >= 65 else "Suspicious URL" if score >= 35 else "No URL Threat Detected",
+        ai_classification=ai_classification(0),
         analysis_summary=f"URL analysis measured {len([i for i in indicators if not i.startswith('No ')])} phishing indicator(s).",
         key_findings=[i for i in indicators if not i.startswith("No ")],
         conclusion="Treat this URL as unsafe until verified." if score >= 35 else "No high-risk URL indicators were detected.",
@@ -407,6 +420,7 @@ def analyze_email_text(raw_email: str) -> AnalysisReport:
         suspicious_frames=[],
         evidence=[EvidenceItem(label="Email Indicator", detail=item, severity=level) for item in indicators if not item.startswith("No ")],
         verdict="Likely Email Scam" if score >= 65 else "Suspicious Email" if score >= 35 else "No Email Threat Detected",
+        ai_classification=ai_classification(0),
         analysis_summary=f"Email analysis measured {len([i for i in indicators if not i.startswith('No ')])} scam/phishing indicator(s).",
         key_findings=[i for i in indicators if not i.startswith("No ")],
         conclusion="Treat this email as phishing until verified through another channel." if score >= 35 else "No high-risk email scam indicators were detected.",
@@ -467,6 +481,7 @@ def analyze_upload(file_name: str, content_type: str | None, source: BinaryIO) -
         suspicious_frames=suspicious_frames,
         evidence=evidence,
         verdict=verdict,
+        ai_classification=ai_classification(scores.deepfake_probability),
         analysis_summary=f"{media_type.title()} analysis completed using measured forensic indicators only.",
         key_findings=key_findings,
         conclusion="High-risk indicators were detected; human verification is recommended before trust or sharing." if scores.threat_score >= 35 else "No high-risk indicators were detected; normal source verification is still recommended.",

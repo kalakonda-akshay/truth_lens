@@ -51,6 +51,7 @@ class AnalysisReport(BaseModel):
     suspicious_frames: list[SuspiciousFrame]
     evidence: list[EvidenceItem]
     verdict: str = "Needs Review"
+    ai_classification: str = "Unable To Determine"
     analysis_summary: str = "Automated TruthLens forensic analysis completed."
     key_findings: list[str] = Field(default_factory=list)
     conclusion: str = "Results are probabilistic and should be reviewed before high-impact decisions."
