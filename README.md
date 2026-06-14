@@ -1,6 +1,6 @@
 # TruthLens
 
-TruthLens is an AI-powered Deepfake and Synthetic Media Verification Platform built for Cyberathon 2026. It is a production-ready hackathon prototype focused on professional UX, explainable forensic reports, and reliable local demos without custom model training.
+TruthLens is an AI-powered Deepfake and Cybersecurity Verification Platform built for Cyberathon 2026. It focuses on professional UX, explainable forensic reports, and evidence-driven analysis without custom model training.
 
 ## Stack
 
@@ -26,7 +26,7 @@ TruthLens is an AI-powered Deepfake and Synthetic Media Verification Platform bu
 - Librosa-based audio clone confidence scoring
 - Authenticity score, deepfake probability, and risk level
 - Evidence-first results page with verdict reasons and recommendations
-- Cyberathon Judge Mode with six built-in image/video/audio sample reports
+- Cyberathon Judge Mode explaining the evidence-first workflow for real submitted evidence
 - Session dashboard for total, media-type, and high-risk scan counts
 - Improved PDF reports with summary, evidence, risk, and recommendations
 - Official TruthLens report template with Report ID, analysis date, summary, metadata, visual analysis, AI artifact detection, evidence visualization, findings, conclusion, recommendations, disclaimer, and TEAM TRUTHLENS footer

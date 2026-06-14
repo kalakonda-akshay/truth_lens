@@ -1,12 +1,11 @@
-import hashlib
 import mimetypes
 import re
 import shutil
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urlparse
 from typing import BinaryIO
+from urllib.parse import urlparse
 
 import cv2
 import librosa
@@ -15,17 +14,17 @@ from PIL import ExifTags, Image
 
 from app.config import get_settings
 from app.models import AnalysisReport, EvidenceItem, MetadataReport, ScoreCard, SuspiciousFrame
-from app.services.risk import calculate_scores
+from app.services.risk import calculate_scores, risk_level
 
 
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm"}
 AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".ogg", ".flac", ".aac"}
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
-
-
-def _stable_int(path: Path) -> int:
-    digest = hashlib.sha256(path.read_bytes()[:2_000_000]).hexdigest()
-    return int(digest[:8], 16)
+DISCLAIMER_RECOMMENDATIONS = [
+    "Do not forward the content until its original source is verified.",
+    "Compare against an original camera, platform, or sender source when available.",
+    "Escalate high-risk findings to a qualified digital forensics or security analyst.",
+]
 
 
 def _media_type(path: Path, content_type: str | None) -> str:
@@ -45,7 +44,6 @@ def _codec_and_duration(path: Path, media_type: str) -> tuple[str, float | None]
                 return f"{image.format or path.suffix.replace('.', '').upper()} {image.width}x{image.height}", None
         except Exception:
             return "Unreadable image", None
-
     if media_type == "video":
         capture = cv2.VideoCapture(str(path))
         if not capture.isOpened():
@@ -56,39 +54,30 @@ def _codec_and_duration(path: Path, media_type: str) -> tuple[str, float | None]
         frames = capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0
         capture.release()
         return codec, round(frames / fps, 2) if fps else None
-
     if media_type == "audio":
         try:
-            duration = librosa.get_duration(path=str(path))
-            return f"{path.suffix.lower().replace('.', '').upper()} audio stream", round(duration, 2)
+            return f"{path.suffix.lower().replace('.', '').upper()} audio stream", round(librosa.get_duration(path=str(path)), 2)
         except Exception:
             return "Audio metadata unavailable", None
-
-    guessed = mimetypes.guess_type(path.name)[0] or "Unknown"
-    return guessed, None
+    return mimetypes.guess_type(path.name)[0] or "Unknown", None
 
 
 def _image_exif(path: Path) -> tuple[dict[str, str], str, str, str | None]:
     exif_data: dict[str, str] = {}
-    camera = "Not available"
-    software = "Not detected"
-    creation_date = None
     try:
         with Image.open(path) as image:
-            raw_exif = image.getexif()
-            for tag_id, value in raw_exif.items():
+            for tag_id, value in image.getexif().items():
                 tag = ExifTags.TAGS.get(tag_id, str(tag_id))
-                if isinstance(value, bytes):
-                    continue
-                exif_data[tag] = str(value)[:180]
-            make = exif_data.get("Make", "").strip()
-            model = exif_data.get("Model", "").strip()
-            camera = " ".join(part for part in [make, model] if part) or "Not available"
-            software = exif_data.get("Software", "Not detected")
-            creation_date = exif_data.get("DateTimeOriginal") or exif_data.get("DateTime")
+                if not isinstance(value, bytes):
+                    exif_data[tag] = str(value)[:180]
     except Exception:
-        pass
-    return exif_data, camera, software, creation_date
+        return {}, "Not available", "Not detected", None
+    make = exif_data.get("Make", "").strip()
+    model = exif_data.get("Model", "").strip()
+    camera = " ".join(part for part in [make, model] if part) or "Not available"
+    software = exif_data.get("Software", "Not detected")
+    created = exif_data.get("DateTimeOriginal") or exif_data.get("DateTime")
+    return exif_data, camera, software, created
 
 
 def scan_metadata(path: Path, media_type: str) -> MetadataReport:
@@ -99,26 +88,22 @@ def scan_metadata(path: Path, media_type: str) -> MetadataReport:
     camera = "Not available"
     editing_software = "Not detected"
     image_creation_date = None
-
     if media_type == "image":
         exif_data, camera, editing_software, image_creation_date = _image_exif(path)
         if not exif_data:
             indicators.append("Missing EXIF metadata; source camera cannot be verified.")
         if editing_software != "Not detected":
             indicators.append(f"Editing software tag detected: {editing_software}.")
-
     if media_type == "unknown":
         indicators.append("Unsupported media container; forensic confidence reduced.")
-    if stat.st_size < 20_000:
+    if stat.st_size < 20_000 and media_type != "url":
         indicators.append("File is unusually small for forensic media analysis.")
     if "Unreadable" in codec or "unavailable" in codec.lower():
         indicators.append("Codec/container could not be fully parsed.")
     if duration is not None and duration < 1:
         indicators.append("Media duration is extremely short.")
-
     if not indicators:
-        indicators.append("No obvious metadata tampering indicators detected.")
-
+        indicators.append("No metadata risk indicators detected.")
     return MetadataReport(
         file_size_mb=round(stat.st_size / (1024 * 1024), 3),
         creation_date=image_creation_date or datetime.fromtimestamp(stat.st_ctime, tz=timezone.utc).isoformat(),
@@ -131,250 +116,208 @@ def scan_metadata(path: Path, media_type: str) -> MetadataReport:
     )
 
 
-def analyze_image(
-    path: Path,
-    report_id: str,
-) -> tuple[dict, list[SuspiciousFrame], int]:
+def _score_from_range(value: float, low: float, high: float) -> int:
+    if low <= value <= high:
+        return 0
+    distance = min(abs(value - low), abs(value - high))
+    return int(np.clip(distance * 100 / max(high - low, 1), 0, 100))
+
+
+def analyze_image(path: Path, report_id: str, metadata: MetadataReport) -> tuple[dict, list[SuspiciousFrame], int, list[EvidenceItem], list[str]]:
     settings = get_settings()
     image = cv2.imread(str(path))
     if image is None:
-        return (
-            {
-                "summary": "Image could not be decoded for visual forensics.",
-                "texture_inconsistency": 70,
-                "lighting_inconsistency": 60,
-                "edge_anomaly": 65,
-                "face_or_finger_irregularity": 55,
-            },
-            [],
-            66,
-        )
+        return {"summary": "Image could not be decoded for visual forensics."}, [], 45, [
+            EvidenceItem(label="Decode Failure", detail="Image could not be decoded by OpenCV.", severity="Medium")
+        ], ["Image decode failed"]
 
+    original = image.copy()
     height, width = image.shape[:2]
     scale = min(1.0, 1200 / max(width, height))
     if scale < 1:
         image = cv2.resize(image, (int(width * scale), int(height * scale)))
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    seed = _stable_int(path)
-
     laplacian = cv2.Laplacian(gray, cv2.CV_64F)
-    edge_map = cv2.Canny(gray, 80, 180)
-    texture_variance = float(np.std(laplacian))
-    texture_score = int(np.clip(88 - texture_variance * 0.18 + seed % 12, 8, 96))
-
-    tile_means: list[float] = []
-    tile_size = max(24, min(gray.shape) // 8)
-    for y in range(0, gray.shape[0], tile_size):
-        for x in range(0, gray.shape[1], tile_size):
-            tile = gray[y : y + tile_size, x : x + tile_size]
-            if tile.size:
-                tile_means.append(float(np.mean(tile)))
-    lighting_score = int(np.clip(np.std(tile_means) * 1.45 + seed % 12, 8, 94))
-    edge_density = float(np.count_nonzero(edge_map)) / edge_map.size
-    edge_score = int(np.clip(abs(edge_density - 0.11) * 420 + seed % 16, 7, 94))
+    edges = cv2.Canny(gray, 80, 180)
+    texture_variance = float(np.var(laplacian))
+    edge_density = float(np.count_nonzero(edges)) / edges.size
+    brightness = float(np.mean(gray))
+    contrast = float(np.std(gray))
+    tile_size = max(32, min(gray.shape) // 8)
+    tile_means = [float(np.mean(gray[y : y + tile_size, x : x + tile_size])) for y in range(0, gray.shape[0], tile_size) for x in range(0, gray.shape[1], tile_size) if gray[y : y + tile_size, x : x + tile_size].size]
+    lighting_variance = float(np.std(tile_means)) if tile_means else 0
     block = 8
     h, w = gray.shape
-    vertical_seams = np.mean(np.abs(gray[:, block:w:block].astype(np.float32) - gray[:, block - 1 : w - 1 : block].astype(np.float32))) if w > block else 0
-    horizontal_seams = np.mean(np.abs(gray[block:h:block, :].astype(np.float32) - gray[block - 1 : h - 1 : block, :].astype(np.float32))) if h > block else 0
-    compression_score = int(np.clip((vertical_seams + horizontal_seams) * 1.8 + seed % 14, 5, 93))
-    noise_pattern_score = int(np.clip(abs(float(np.mean(gray)) - float(np.median(gray))) * 3.6 + max(0, 42 - texture_variance * 0.08), 4, 92))
+    vertical = float(np.mean(np.abs(gray[:, block:w:block].astype(np.float32) - gray[:, block - 1 : w - 1 : block].astype(np.float32)))) if w > block else 0
+    horizontal = float(np.mean(np.abs(gray[block:h:block, :].astype(np.float32) - gray[block - 1 : h - 1 : block, :].astype(np.float32)))) if h > block else 0
+    compression_seams = vertical + horizontal
+    noise_residual = gray.astype(np.float32) - cv2.GaussianBlur(gray, (0, 0), 1.4).astype(np.float32)
+    noise_std = float(np.std(noise_residual))
 
-    face_cascade = cv2.CascadeClassifier(
-        cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-    )
+    metrics = {
+        "texture_inconsistency": _score_from_range(texture_variance, 120, 4200),
+        "lighting_inconsistency": _score_from_range(lighting_variance, 8, 48),
+        "edge_anomaly": _score_from_range(edge_density, 0.025, 0.22),
+        "compression_artifacts": int(np.clip(compression_seams * 2.6, 0, 100)),
+        "noise_pattern_anomaly": _score_from_range(noise_std, 2.5, 28),
+        "brightness_anomaly": _score_from_range(brightness, 35, 220),
+        "contrast_anomaly": _score_from_range(contrast, 18, 95),
+    }
+
+    face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
     faces = face_cascade.detectMultiScale(gray, scaleFactor=1.12, minNeighbors=5)
-    irregularity_score = int(np.clip(28 + len(faces) * 8 + seed % 38, 12, 88))
-    ai_probability = int(
-        np.clip(
-            texture_score * 0.24
-            + lighting_score * 0.18
-            + edge_score * 0.19
-            + irregularity_score * 0.16
-            + compression_score * 0.12
-            + noise_pattern_score * 0.11,
-            5,
-            98,
-        )
-    )
+    face_irregularity = 0
+    for (x, y, fw, fh) in faces:
+        roi = gray[y : y + fh, x : x + fw]
+        if roi.size:
+            face_irregularity = max(face_irregularity, _score_from_range(float(np.var(cv2.Laplacian(roi, cv2.CV_64F))), 100, 3600))
+    metrics["face_anomaly"] = face_irregularity
+    metrics["faces_detected"] = int(len(faces))
+    metrics["diffusion_artifacts"] = int(np.clip((metrics["texture_inconsistency"] + metrics["noise_pattern_anomaly"]) / 2, 0, 100))
+    metrics["gan_artifacts"] = int(np.clip((metrics["edge_anomaly"] + metrics["face_anomaly"]) / 2, 0, 100))
+    metadata_score = 0
+    if not metadata.exif_data:
+        metadata_score += 18
+    if metadata.editing_software != "Not detected":
+        metadata_score += 16
+    visual_score = int(np.clip(np.mean([value for key, value in metrics.items() if key != "faces_detected"]), 0, 100))
+    ai_probability = int(np.clip(visual_score * 0.72 + metadata_score, 0, 100))
 
-    heat_source = cv2.GaussianBlur(np.abs(laplacian).astype(np.float32), (0, 0), 7)
-    normalized = cv2.normalize(heat_source, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-    heatmap = cv2.applyColorMap(normalized, cv2.COLORMAP_TURBO)
-    overlay = cv2.addWeighted(image, 0.66, heatmap, 0.34, 0)
+    evidence: list[EvidenceItem] = []
+    findings: list[str] = []
+    thresholds = {
+        "texture_inconsistency": ("Texture inconsistency detected", 45),
+        "lighting_inconsistency": ("Lighting mismatch detected", 45),
+        "edge_anomaly": ("Edge/outline anomaly detected", 45),
+        "compression_artifacts": ("Compression artifact inconsistency detected", 55),
+        "noise_pattern_anomaly": ("Noise pattern anomaly detected", 45),
+        "face_anomaly": ("Face-region anomaly detected", 55),
+        "diffusion_artifacts": ("Diffusion-like artifact pattern detected", 55),
+        "gan_artifacts": ("GAN-like artifact pattern detected", 55),
+    }
+    for key, (label, threshold) in thresholds.items():
+        score = int(metrics[key])
+        if score >= threshold:
+            severity = risk_level(score)
+            evidence.append(EvidenceItem(label=label, detail=f"{label} with measured score {score}%.", severity=severity))
+            findings.append(label)
+    if not metadata.exif_data:
+        evidence.append(EvidenceItem(label="Missing Camera Metadata", detail="No EXIF camera metadata was present in the uploaded image.", severity="Medium"))
+        findings.append("Missing camera metadata")
+    if metadata.editing_software != "Not detected":
+        evidence.append(EvidenceItem(label="Editing Software Trace", detail=f"EXIF software field reports: {metadata.editing_software}.", severity="Medium"))
+        findings.append("Editing software trace present")
 
-    box_width = max(80, overlay.shape[1] // 3)
-    box_height = max(80, overlay.shape[0] // 3)
-    boxes = [
-        (overlay.shape[1] // 12, overlay.shape[0] // 8),
-        (max(10, overlay.shape[1] - box_width - overlay.shape[1] // 10), max(10, overlay.shape[0] - box_height - overlay.shape[0] // 9)),
-    ]
-    for index, (x, y) in enumerate(boxes):
-        cv2.rectangle(
-            overlay,
-            (x, y),
-            (min(x + box_width, overlay.shape[1] - 1), min(y + box_height, overlay.shape[0] - 1)),
-            (0, 255, 255),
-            4,
-        )
-        cv2.putText(
-            overlay,
-            f"region {index + 1}",
-            (x + 8, y + 28),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.75,
-            (255, 255, 255),
-            2,
-        )
+    suspicious: list[SuspiciousFrame] = []
+    if evidence and visual_score >= 35:
+        anomaly = cv2.normalize(np.abs(laplacian).astype(np.float32), None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+        _, mask = cv2.threshold(anomaly, int(np.percentile(anomaly, 92)), 255, cv2.THRESH_BINARY)
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        overlay = cv2.addWeighted(image, 0.68, cv2.applyColorMap(anomaly, cv2.COLORMAP_TURBO), 0.32, 0)
+        boxes = 0
+        for contour in sorted(contours, key=cv2.contourArea, reverse=True):
+            if boxes >= 4 or cv2.contourArea(contour) < max(80, image.shape[0] * image.shape[1] * 0.002):
+                continue
+            x, y, bw, bh = cv2.boundingRect(contour)
+            cv2.rectangle(overlay, (x, y), (x + bw, y + bh), (0, 255, 255), 3)
+            boxes += 1
+        if boxes:
+            frame_name = f"{report_id}-image-evidence.jpg"
+            cv2.imwrite(str(settings.storage_dir / "frames" / frame_name), overlay)
+            suspicious.append(SuspiciousFrame(timestamp_seconds=0, frame_url=f"/frames/{frame_name}", reason="Heatmap is derived from measured local edge/noise residual anomalies.", score=visual_score))
 
-    frame_name = f"{report_id}-image-forensics.jpg"
-    cv2.imwrite(str(settings.storage_dir / "frames" / frame_name), overlay)
-    suspicious = [
-        SuspiciousFrame(
-            timestamp_seconds=0,
-            frame_url=f"/frames/{frame_name}",
-            reason="Heatmap highlights texture, edge, and lighting regions requiring review.",
-            score=ai_probability,
-        )
-    ]
-
-    return (
-        {
-            "summary": "OpenCV evaluated texture frequency, local lighting, edge density, and face-region irregularities.",
-            "texture_inconsistency": texture_score,
-            "lighting_inconsistency": lighting_score,
-            "edge_anomaly": edge_score,
-            "face_or_finger_irregularity": irregularity_score,
-            "diffusion_artifacts": int(np.clip((texture_score + noise_pattern_score) / 2, 0, 100)),
-            "gan_artifacts": int(np.clip((edge_score + irregularity_score) / 2, 0, 100)),
-            "compression_artifacts": compression_score,
-            "noise_pattern_anomaly": noise_pattern_score,
-            "faces_detected": len(faces),
-            "heatmap_generated": True,
-        },
-        suspicious,
-        ai_probability,
-    )
+    metrics.update({
+        "summary": "OpenCV measured texture variance, lighting variance, edge density, compression seams, residual noise, and face-region anomalies.",
+        "heatmap_generated": bool(suspicious),
+        "resolution": f"{original.shape[1]}x{original.shape[0]}",
+    })
+    return metrics, suspicious, ai_probability, evidence, findings
 
 
 def analyze_faces(path: Path, report_id: str, media_type: str) -> tuple[dict, list[SuspiciousFrame]]:
     if media_type != "video":
-        return (
-            {
-                "frames_analyzed": 0,
-                "suspicious_frames": 0,
-                "summary": "Video face analysis skipped for this media type.",
-            },
-            [],
-        )
-
+        return {"frames_analyzed": 0, "suspicious_frames": 0, "summary": "Video frame analysis not applicable."}, []
     settings = get_settings()
     capture = cv2.VideoCapture(str(path))
     fps = capture.get(cv2.CAP_PROP_FPS) or 24
     frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
     interval = max(1, frame_count // 12) if frame_count else 24
-    seed = _stable_int(path)
     suspicious: list[SuspiciousFrame] = []
     analyzed = 0
-    index = 0
-
-    while capture.isOpened() and analyzed < 12:
+    for index in range(0, max(frame_count, 1), interval):
+        if analyzed >= 12:
+            break
         capture.set(cv2.CAP_PROP_POS_FRAMES, index)
         ok, frame = capture.read()
         if not ok:
             break
-
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         blur = cv2.Laplacian(gray, cv2.CV_64F).var()
         brightness = float(np.mean(gray))
-        simulated_score = int((abs(brightness - 112) * 0.55 + max(0, 140 - blur) * 0.25 + seed % 23))
-        simulated_score = max(8, min(94, simulated_score))
-
-        if simulated_score >= 45 or analyzed in {3, 8}:
-            frame_name = f"{report_id}-{analyzed}.jpg"
-            frame_path = settings.storage_dir / "frames" / frame_name
+        edge_density = float(np.count_nonzero(cv2.Canny(gray, 80, 180))) / gray.size
+        score = int(np.clip(_score_from_range(blur, 80, 4200) * 0.4 + _score_from_range(brightness, 35, 220) * 0.25 + _score_from_range(edge_density, 0.025, 0.22) * 0.35, 0, 100))
+        if score >= 45:
+            frame_name = f"{report_id}-frame-{analyzed}.jpg"
             annotated = frame.copy()
-            cv2.rectangle(annotated, (20, 20), (annotated.shape[1] - 20, annotated.shape[0] - 20), (0, 77, 255), 4)
-            cv2.putText(
-                annotated,
-                f"forensic anomaly {simulated_score}%",
-                (32, 58),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.8,
-                (0, 255, 255),
-                2,
-            )
-            cv2.imwrite(str(frame_path), annotated)
-            suspicious.append(
-                SuspiciousFrame(
-                    timestamp_seconds=round(index / fps, 2),
-                    frame_url=f"/frames/{frame_name}",
-                    reason="Texture, lighting, or compression inconsistency detected.",
-                    score=simulated_score,
-                )
-            )
-
+            cv2.rectangle(annotated, (20, 20), (annotated.shape[1] - 20, annotated.shape[0] - 20), (0, 255, 255), 4)
+            cv2.imwrite(str(settings.storage_dir / "frames" / frame_name), annotated)
+            suspicious.append(SuspiciousFrame(timestamp_seconds=round(index / fps, 2), frame_url=f"/frames/{frame_name}", reason="Frame anomaly score exceeded threshold from blur, brightness, and edge-density metrics.", score=score))
         analyzed += 1
-        index += interval
-
     capture.release()
-    return (
-        {
-            "frames_analyzed": analyzed,
-            "suspicious_frames": len(suspicious),
-            "summary": "OpenCV sampled frames and highlighted likely visual anomalies.",
-        },
-        suspicious[:4],
-    )
+    return {"frames_analyzed": analyzed, "suspicious_frames": len(suspicious), "summary": "OpenCV sampled frames and retained only frames with measured anomaly scores above threshold."}, suspicious[:4]
 
 
 def analyze_lip_sync(path: Path, media_type: str) -> dict:
-    seed = _stable_int(path)
     if media_type != "video":
-        score = 18 + seed % 18
-        summary = "Lip-sync module skipped for audio-only media; low visual mismatch risk assigned."
-    else:
-        score = 24 + seed % 58
-        summary = "Prototype estimated mouth-motion/audio alignment from sampled forensic signals."
-    return {"forensic_score": score, "summary": summary}
+        return {"forensic_score": 0, "summary": "Not applicable."}
+    return {"forensic_score": 0, "summary": "Lip-sync mismatch is not claimed because no speech-to-mouth model is available in this prototype."}
 
 
-def analyze_audio_clone(path: Path, media_type: str) -> dict:
+def _write_audio_spectrogram(path: Path, report_id: str, y: np.ndarray, sr: int) -> SuspiciousFrame:
+    settings = get_settings()
+    spectrogram = np.abs(librosa.stft(y, n_fft=1024, hop_length=256))
+    db = librosa.amplitude_to_db(spectrogram, ref=np.max)
+    normalized = cv2.normalize(db, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+    color = cv2.applyColorMap(normalized, cv2.COLORMAP_TURBO)
+    color = cv2.flip(color, 0)
+    frame_name = f"{report_id}-audio-spectrogram.jpg"
+    cv2.imwrite(str(settings.storage_dir / "frames" / frame_name), color)
+    return SuspiciousFrame(timestamp_seconds=0, frame_url=f"/frames/{frame_name}", reason="Spectrogram generated from decoded audio samples.", score=0)
+
+
+def analyze_audio_clone(path: Path, media_type: str, report_id: str | None = None) -> tuple[dict, list[SuspiciousFrame]]:
     if media_type not in {"audio", "video"}:
-        return {"synthetic_voice_confidence": 20, "summary": "Audio stream unavailable for clone detection."}
-
+        return {"synthetic_voice_confidence": 0, "summary": "Audio stream unavailable for this media type."}, []
     try:
         y, sr = librosa.load(str(path), sr=16000, mono=True, duration=45)
         if len(y) == 0:
             raise ValueError("empty audio")
-        spectral_flatness = float(np.mean(librosa.feature.spectral_flatness(y=y)))
+        flatness = float(np.mean(librosa.feature.spectral_flatness(y=y)))
         zcr = float(np.mean(librosa.feature.zero_crossing_rate(y)))
         mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13)
         mfcc_variance = float(np.mean(np.var(mfcc, axis=1)))
-        confidence = int(min(92, max(8, spectral_flatness * 220 + zcr * 280 + max(0, 35 - mfcc_variance) * 1.8)))
-        summary = "Librosa extracted acoustic stability, spectral flatness, and voice texture features."
-    except Exception:
-        confidence = 28 + _stable_int(path) % 42
-        summary = "Audio stream could not be decoded reliably; deterministic fallback score used."
+        rms = float(np.mean(librosa.feature.rms(y=y)))
+        confidence = int(np.clip(flatness * 180 + zcr * 220 + _score_from_range(mfcc_variance, 20, 180) * 0.45 + _score_from_range(rms, 0.01, 0.22) * 0.18, 0, 100))
+        frames = [_write_audio_spectrogram(path, report_id, y, sr)] if report_id else []
+        return {
+            "synthetic_voice_confidence": confidence,
+            "spectral_flatness": round(flatness, 4),
+            "zero_crossing_rate": round(zcr, 4),
+            "mfcc_variance": round(mfcc_variance, 3),
+            "rms_energy": round(rms, 4),
+            "summary": "Librosa decoded the audio and measured spectral flatness, zero-crossing rate, MFCC variance, and RMS energy.",
+        }, frames
+    except Exception as exc:
+        return {"synthetic_voice_confidence": 0, "summary": f"Audio could not be decoded; no synthetic voice finding was generated. {exc}"}, []
 
-    return {"synthetic_voice_confidence": confidence, "summary": summary}
 
-
-def _risk_level(score: int) -> str:
-    if score >= 85:
-        return "Critical"
-    if score >= 65:
-        return "High"
-    if score >= 35:
-        return "Medium"
-    return "Low"
+def _text_metadata(label: str, indicators: list[str], size: int = 0) -> MetadataReport:
+    return MetadataReport(file_size_mb=round(size / (1024 * 1024), 4), creation_date=datetime.now(timezone.utc).isoformat(), codec=label, duration_seconds=None, tampering_indicators=indicators)
 
 
 def analyze_url_text(raw_url: str) -> AnalysisReport:
-    report_id = str(uuid.uuid4())
     parsed = urlparse(raw_url if re.match(r"^https?://", raw_url, re.I) else f"https://{raw_url}")
     domain = parsed.netloc.lower()
-    suspicious_terms = ["login", "verify", "secure", "account", "update", "wallet", "free", "bonus", "reset"]
-    brand_terms = ["paypal", "google", "microsoft", "apple", "amazon", "bank", "meta", "instagram"]
     indicators: list[str] = []
     score = 0
     if parsed.scheme != "https":
@@ -386,67 +329,59 @@ def analyze_url_text(raw_url: str) -> AnalysisReport:
     if re.search(r"\d+\.\d+\.\d+\.\d+", domain):
         indicators.append("Domain uses a raw IP address.")
         score += 25
-    if len(domain.split(".")) > 3:
+    if len([part for part in domain.split(".") if part]) > 3:
         indicators.append("Excessive subdomain depth detected.")
         score += 12
-    if any(term in raw_url.lower() for term in suspicious_terms):
-        indicators.append("Credential or urgency keywords detected.")
+    if re.search(r"(login|verify|secure|account|update|wallet|reset)", raw_url, re.I):
+        indicators.append("Credential or account-verification keyword detected.")
         score += 18
-    if any(brand in domain for brand in brand_terms) and not any(domain.endswith(f"{brand}.com") for brand in brand_terms):
-        indicators.append("Potential typosquatting or brand impersonation.")
-        score += 24
+    if re.search(r"(paypa1|g00gle|micros0ft|amaz0n|appleid|secure-bank)", domain, re.I):
+        indicators.append("Potential typosquatting or brand impersonation detected.")
+        score += 28
     if "-" in domain:
-        indicators.append("Hyphenated domain can indicate typosquatting.")
+        indicators.append("Hyphenated domain structure detected.")
         score += 8
     if not indicators:
-        indicators.append("No strong phishing URL indicators detected.")
-    score = int(np.clip(score, 5, 98))
-    risk = _risk_level(score)
-    metadata = MetadataReport(
-        file_size_mb=0,
-        creation_date=datetime.now(timezone.utc).isoformat(),
-        codec="URL indicator",
-        duration_seconds=None,
-        tampering_indicators=indicators,
-    )
-    evidence = [EvidenceItem(label="URL Risk Indicator", detail=item, severity=risk) for item in indicators]
+        indicators.append("No phishing URL indicators detected.")
+    score = int(np.clip(score, 0, 100))
+    level = risk_level(score)
+    report_id = str(uuid.uuid4())
     return AnalysisReport(
         id=report_id,
         filename=raw_url,
         media_type="url",
         uploaded_at=datetime.now(timezone.utc).isoformat(),
-        scores=ScoreCard(authenticity_score=100 - score, deepfake_probability=0, risk_level=risk, confidence_score=88, threat_score=score),
-        metadata=metadata,
+        scores=ScoreCard(authenticity_score=100 - score, deepfake_probability=0, risk_level=level, confidence_score=88, threat_score=score),
+        metadata=_text_metadata("URL indicator", indicators),
         face_analysis={},
         lip_sync_analysis={},
         audio_clone_detection={},
         url_analysis={"domain": domain, "scheme": parsed.scheme, "path": parsed.path, "indicators": indicators},
         suspicious_frames=[],
-        evidence=evidence,
-        verdict="Likely Phishing" if score >= 65 else "Suspicious URL" if score >= 35 else "Likely Safe URL",
-        analysis_summary=f"TruthLens URL analysis produced a {score}% threat score.",
-        key_findings=indicators,
-        conclusion="Do not enter credentials or sensitive information on high-risk URLs.",
+        evidence=[EvidenceItem(label="URL Indicator", detail=item, severity=level) for item in indicators if not item.startswith("No ")],
+        verdict="Likely Phishing" if score >= 65 else "Suspicious URL" if score >= 35 else "No URL Threat Detected",
+        analysis_summary=f"URL analysis measured {len([i for i in indicators if not i.startswith('No ')])} phishing indicator(s).",
+        key_findings=[i for i in indicators if not i.startswith("No ")],
+        conclusion="Treat this URL as unsafe until verified." if score >= 35 else "No high-risk URL indicators were detected.",
         reasons_for_decision=indicators,
-        recommendations=["Open links only from official domains.", "Avoid entering credentials after redirects.", "Report suspicious domains to your security team."],
+        recommendations=["Use official domains typed manually.", "Do not enter credentials on suspicious URLs.", "Report suspicious links to security staff."],
     )
 
 
 def analyze_email_text(raw_email: str) -> AnalysisReport:
-    report_id = str(uuid.uuid4())
     lowered = raw_email.lower()
+    checks = [
+        ("Credential theft language detected.", ["password", "verify your account", "login immediately", "reset your account"], 22),
+        ("Urgency or threat pressure detected.", ["urgent", "suspended", "24 hours", "immediately", "final notice"], 22),
+        ("Payment or reward lure detected.", ["prize", "refund", "invoice", "wire transfer", "gift card", "crypto"], 22),
+        ("Attachment or link risk detected.", [".exe", ".scr", "bit.ly", "tinyurl", "http://"], 22),
+    ]
     indicators: list[str] = []
     score = 0
-    patterns = {
-        "Credential theft language detected.": ["password", "verify your account", "login immediately", "reset your account"],
-        "Urgency or threat pressure detected.": ["urgent", "suspended", "24 hours", "immediately", "final notice"],
-        "Payment or reward lure detected.": ["prize", "refund", "invoice", "wire transfer", "gift card", "crypto"],
-        "Attachment or link risk detected.": [".exe", ".scr", "bit.ly", "tinyurl", "http://"],
-    }
-    for label, needles in patterns.items():
+    for label, needles, points in checks:
         if any(needle in lowered for needle in needles):
             indicators.append(label)
-            score += 22
+            score += points
     if re.search(r"from:.*(support|security|admin).*@(gmail|outlook|yahoo)\.", lowered):
         indicators.append("Impersonation from consumer email domain detected.")
         score += 22
@@ -454,36 +389,29 @@ def analyze_email_text(raw_email: str) -> AnalysisReport:
         indicators.append("Generic greeting often used in phishing.")
         score += 10
     if not indicators:
-        indicators.append("No strong scam or phishing indicators detected.")
-    score = int(np.clip(score, 4, 99))
-    risk = _risk_level(score)
-    metadata = MetadataReport(
-        file_size_mb=round(len(raw_email.encode("utf-8")) / (1024 * 1024), 4),
-        creation_date=datetime.now(timezone.utc).isoformat(),
-        codec="Email text / EML",
-        duration_seconds=None,
-        tampering_indicators=indicators,
-    )
-    evidence = [EvidenceItem(label="Email Scam Indicator", detail=item, severity=risk) for item in indicators]
+        indicators.append("No scam or phishing indicators detected.")
+    score = int(np.clip(score, 0, 100))
+    level = risk_level(score)
+    report_id = str(uuid.uuid4())
     return AnalysisReport(
         id=report_id,
         filename="Pasted email / EML content",
         media_type="email",
         uploaded_at=datetime.now(timezone.utc).isoformat(),
-        scores=ScoreCard(authenticity_score=100 - score, deepfake_probability=0, risk_level=risk, confidence_score=86, threat_score=score),
-        metadata=metadata,
+        scores=ScoreCard(authenticity_score=100 - score, deepfake_probability=0, risk_level=level, confidence_score=86, threat_score=score),
+        metadata=_text_metadata("Email text / EML", indicators, len(raw_email.encode("utf-8"))),
         face_analysis={},
         lip_sync_analysis={},
         audio_clone_detection={},
         email_analysis={"indicators": indicators, "highlight_terms": ["password", "urgent", "verify", "suspended", "invoice", "gift card"]},
         suspicious_frames=[],
-        evidence=evidence,
-        verdict="Likely Email Scam" if score >= 65 else "Suspicious Email" if score >= 35 else "Likely Legitimate Email",
-        analysis_summary=f"TruthLens email analysis produced a {score}% threat score.",
-        key_findings=indicators,
-        conclusion="Treat high-risk emails as phishing until verified through an independent channel.",
+        evidence=[EvidenceItem(label="Email Indicator", detail=item, severity=level) for item in indicators if not item.startswith("No ")],
+        verdict="Likely Email Scam" if score >= 65 else "Suspicious Email" if score >= 35 else "No Email Threat Detected",
+        analysis_summary=f"Email analysis measured {len([i for i in indicators if not i.startswith('No ')])} scam/phishing indicator(s).",
+        key_findings=[i for i in indicators if not i.startswith("No ")],
+        conclusion="Treat this email as phishing until verified through another channel." if score >= 35 else "No high-risk email scam indicators were detected.",
         reasons_for_decision=indicators,
-        recommendations=["Do not click links or open attachments.", "Verify sender identity using a known official channel.", "Report suspected phishing to your organization."],
+        recommendations=["Do not click links or open attachments in suspicious email.", "Verify the sender through a known trusted channel.", "Report suspected phishing to the security team."],
     )
 
 
@@ -498,120 +426,33 @@ def analyze_upload(file_name: str, content_type: str | None, source: BinaryIO) -
     media_type = _media_type(destination, content_type)
     metadata = scan_metadata(destination, media_type)
     image_forensics: dict = {}
-
     if media_type == "image":
-        image_forensics, suspicious_frames, ai_probability = analyze_image(destination, report_id)
-        metadata_penalty = 22 if not metadata.exif_data else 0
-        software_penalty = 14 if metadata.editing_software != "Not detected" else 0
-        ai_probability = int(np.clip(ai_probability + metadata_penalty + software_penalty, 4, 98))
-        authenticity = 100 - ai_probability
-        risk_level = _risk_level(ai_probability)
-        verdict = (
-            "Likely AI Generated"
-            if ai_probability >= 70
-            else "Likely Manipulated"
-            if ai_probability >= 40
-            else "Likely Authentic"
-        )
-        scores = ScoreCard(
-            authenticity_score=authenticity,
-            deepfake_probability=ai_probability,
-            risk_level=risk_level,
-            confidence_score=min(97, 78 + len(metadata.exif_data) // 3),
-            threat_score=ai_probability,
-        )
-        face_analysis = {
-            "frames_analyzed": 1,
-            "suspicious_frames": len(suspicious_frames),
-            "summary": "Still-image face and region analysis completed.",
-        }
-        lip_sync = {"forensic_score": 0, "summary": "Not applicable to still images."}
-        audio_clone = {"synthetic_voice_confidence": 0, "summary": "Not applicable to still images."}
-        reasons = [
-            "Missing Metadata" if not metadata.exif_data else "EXIF Metadata Present",
-            "AI Texture Artifacts" if image_forensics["texture_inconsistency"] >= 45 else "Texture Pattern Consistent",
-            "Lighting Inconsistencies" if image_forensics["lighting_inconsistency"] >= 45 else "Lighting Pattern Consistent",
-            "Face Inconsistencies" if image_forensics["face_or_finger_irregularity"] >= 52 else "No Strong Face Irregularity",
-            "Compression Artifacts" if image_forensics["compression_artifacts"] >= 45 else "Compression Pattern Normal",
-            "GAN/Diffusion Artifacts" if image_forensics["diffusion_artifacts"] >= 50 or image_forensics["gan_artifacts"] >= 50 else "No Strong GAN/Diffusion Signature",
-        ]
-        evidence = [
-            EvidenceItem(
-                label="Image Authenticity Detection",
-                detail=f"{verdict}: AI-generated probability is {ai_probability}%.",
-                severity=risk_level,
-            ),
-            EvidenceItem(
-                label="Metadata Analysis",
-                detail=", ".join(metadata.tampering_indicators),
-                severity="Medium" if not metadata.exif_data else "Low",
-            ),
-            EvidenceItem(
-                label="Visual Forensics",
-                detail=(
-                    f"Texture {image_forensics['texture_inconsistency']}%, "
-                    f"lighting {image_forensics['lighting_inconsistency']}%, "
-                    f"edge anomaly {image_forensics['edge_anomaly']}%, "
-                    f"compression {image_forensics['compression_artifacts']}%, "
-                    f"noise pattern {image_forensics['noise_pattern_anomaly']}%."
-                ),
-                severity=risk_level,
-            ),
-        ]
-        analysis_summary = f"Image forensics completed with {ai_probability}% AI-generated probability and {risk_level} risk."
-        key_findings = reasons
-        conclusion = (
-            "This image is likely AI-generated or manipulated and should not be trusted without human verification."
-            if ai_probability >= 65
-            else "This image has limited synthetic indicators, but provenance verification is still recommended."
-        )
+        image_forensics, suspicious_frames, probability, evidence, findings = analyze_image(destination, report_id, metadata)
+        level = risk_level(probability)
+        scores = ScoreCard(authenticity_score=100 - probability, deepfake_probability=probability, risk_level=level, confidence_score=min(96, 62 + len(evidence) * 8), threat_score=probability)
+        face_analysis = {"frames_analyzed": 1, "suspicious_frames": len(suspicious_frames), "summary": "Still-image analysis completed using measured image statistics."}
+        lip_sync = {"forensic_score": 0, "summary": "Not applicable."}
+        audio_clone = {"synthetic_voice_confidence": 0, "summary": "Not applicable."}
+        verdict = "Likely AI Generated or Manipulated" if probability >= 65 else "Review Recommended" if probability >= 35 else "No Strong Image Manipulation Detected"
+        key_findings = findings
     else:
         face_analysis, suspicious_frames = analyze_faces(destination, report_id, media_type)
         lip_sync = analyze_lip_sync(destination, media_type)
-        audio_clone = analyze_audio_clone(destination, media_type)
-        frame_score = max([frame.score for frame in suspicious_frames], default=18)
-
+        audio_clone, audio_frames = analyze_audio_clone(destination, media_type, report_id)
+        suspicious_frames = suspicious_frames + audio_frames
         scores, evidence = calculate_scores(
-            tampering_count=len([i for i in metadata.tampering_indicators if not i.startswith("No obvious")]),
-            suspicious_frame_score=frame_score,
+            tampering_count=len([i for i in metadata.tampering_indicators if not i.startswith("No ")]),
+            suspicious_frame_score=max([frame.score for frame in suspicious_frames], default=0),
             lip_sync_score=lip_sync["forensic_score"],
             audio_clone_confidence=audio_clone["synthetic_voice_confidence"],
         )
-        scores.threat_score = scores.deepfake_probability
-        verdict = (
-            "Likely Synthetic"
-            if scores.deepfake_probability >= 70
-            else "Needs Verification"
-            if scores.deepfake_probability >= 40
-            else "Likely Authentic"
-        )
-        reasons = [
-            "Missing Metadata" if any("metadata" in item.lower() for item in metadata.tampering_indicators) else "Metadata Checked",
-            "Synthetic Voice Indicators" if audio_clone["synthetic_voice_confidence"] >= 45 else "Voice Texture Consistent",
-            "Lip-Sync Mismatch" if lip_sync["forensic_score"] >= 45 else "Lip-Sync Within Expected Range",
-        ]
-        evidence.extend(
-            [
-                EvidenceItem(
-                    label="Metadata Scanner",
-                    detail=", ".join(metadata.tampering_indicators),
-                    severity="Medium" if len(metadata.tampering_indicators) > 1 else "Low",
-                ),
-                EvidenceItem(
-                    label="Audio Clone Detection",
-                    detail=f"Synthetic voice confidence is {audio_clone['synthetic_voice_confidence']}%.",
-                    severity="High" if audio_clone["synthetic_voice_confidence"] > 70 else "Medium",
-                ),
-            ]
-        )
-        analysis_summary = f"{media_type.title()} analysis completed with {scores.deepfake_probability}% synthetic probability and {scores.threat_score}% threat score."
-        key_findings = reasons
-        conclusion = (
-            "TruthLens found strong synthetic media indicators. Treat this content as unverified."
-            if scores.threat_score >= 65
-            else "TruthLens found limited synthetic indicators, but source verification is still recommended."
-        )
+        if not evidence and any(not item.startswith("No ") for item in metadata.tampering_indicators):
+            evidence.append(EvidenceItem(label="Metadata Indicator", detail=", ".join(metadata.tampering_indicators), severity=scores.risk_level))
+        verdict = "Likely Synthetic or Manipulated" if scores.threat_score >= 65 else "Review Recommended" if scores.threat_score >= 35 else "No Strong Synthetic Indicators Detected"
+        key_findings = [item.detail for item in evidence]
 
+    if not key_findings:
+        key_findings = ["No high-risk forensic indicators were detected by the available analysis modules."]
     return AnalysisReport(
         id=report_id,
         filename=file_name,
@@ -626,13 +467,9 @@ def analyze_upload(file_name: str, content_type: str | None, source: BinaryIO) -
         suspicious_frames=suspicious_frames,
         evidence=evidence,
         verdict=verdict,
-        analysis_summary=analysis_summary,
+        analysis_summary=f"{media_type.title()} analysis completed using measured forensic indicators only.",
         key_findings=key_findings,
-        conclusion=conclusion,
-        reasons_for_decision=reasons,
-        recommendations=[
-            "Do not forward the media until its original source is verified.",
-            "Compare against an original camera or platform upload when available.",
-            "Escalate high-risk findings to a qualified digital forensics analyst.",
-        ],
+        conclusion="High-risk indicators were detected; human verification is recommended before trust or sharing." if scores.threat_score >= 35 else "No high-risk indicators were detected; normal source verification is still recommended.",
+        reasons_for_decision=key_findings,
+        recommendations=DISCLAIMER_RECOMMENDATIONS,
     )

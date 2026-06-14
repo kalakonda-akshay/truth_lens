@@ -101,7 +101,7 @@ export default function Home() {
       <section id="features" className="mx-auto max-w-7xl px-6 py-20">
         <div className="max-w-3xl">
           <p className="text-sm font-semibold uppercase tracking-[0.35em] text-cyber-cyan">Analysis engine</p>
-          <h2 className="mt-3 text-4xl font-black text-white">Explainable AI modules for high-trust demos</h2>
+          <h2 className="mt-3 text-4xl font-black text-white">Explainable AI modules for evidence-driven analysis</h2>
           <p className="mt-4 text-slate-300">
             Designed for security teams, educators, and incident responders who need a fast first-pass signal before sharing sensitive media.
           </p>

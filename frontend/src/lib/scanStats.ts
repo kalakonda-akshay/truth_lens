@@ -31,7 +31,7 @@ export function recordScan(mediaType: string, riskLevel: string) {
   if (mediaType === "image") next.image += 1;
   if (mediaType === "video") next.video += 1;
   if (mediaType === "audio") next.audio += 1;
-  if (riskLevel === "High") next.highRisk += 1;
+  if (riskLevel === "High" || riskLevel === "Critical") next.highRisk += 1;
   localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
   window.dispatchEvent(new CustomEvent("truthlens:stats", { detail: next }));
 }

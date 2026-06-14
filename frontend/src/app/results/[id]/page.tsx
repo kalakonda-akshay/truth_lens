@@ -177,7 +177,7 @@ export default function ResultsPage() {
         {judgeMode && (
           <div className="mb-6 flex items-center gap-3 rounded-2xl border border-cyber-cyan/30 bg-cyber-cyan/10 px-5 py-4 text-cyber-cyan">
             <Sparkles className="h-5 w-5" />
-            <p className="font-black">Cyberathon Judge Mode · Guided sample forensic report</p>
+            <p className="font-black">Cyberathon Judge Mode · Evidence-driven forensic report</p>
           </div>
         )}
         <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">

@@ -139,7 +139,7 @@ export function UploadPanel() {
       setProgress(100);
       router.push(`/results/${report.id}`);
     } catch {
-      setError(API_URL ? "Analysis service timed out or is unavailable. Check the FastAPI backend URL." : "Local prototype analysis failed for this file. Try a JPG, PNG, shorter MP4, MP3, or WAV sample.");
+      setError(API_URL ? "Analysis service timed out or is unavailable. Check the FastAPI backend URL." : "Local browser analysis failed for this file. Try a JPG, PNG, shorter MP4, MP3, or WAV file.");
       setProgress(0);
     } finally {
       if (timer) window.clearInterval(timer);
