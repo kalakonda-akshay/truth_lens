@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { AudioWaveform, FileImage, Film, Gauge, Play, ShieldAlert, Sparkles } from "lucide-react";
+import { AudioWaveform, FileImage, FileText, Film, Gauge, Link as LinkIcon, Play, ShieldAlert, Sparkles } from "lucide-react";
 import { createDemoReport, demoSamples, type DemoSample } from "@/lib/demoReports";
 import { defaultStats, readStats, recordScan, type ScanStats } from "@/lib/scanStats";
 
@@ -10,6 +10,8 @@ const sampleIcons = {
   image: FileImage,
   video: Film,
   audio: AudioWaveform,
+  url: LinkIcon,
+  email: FileText,
 };
 
 export function DemoCenter() {

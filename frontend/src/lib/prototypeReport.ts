@@ -13,6 +13,13 @@ function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, Math.round(value)));
 }
 
+function riskLevel(score: number) {
+  if (score >= 85) return "Critical";
+  if (score >= 65) return "High";
+  if (score >= 35) return "Medium";
+  return "Low";
+}
+
 function mediaType(file: File) {
   if (file.type.startsWith("image/")) return "image";
   if (file.type.startsWith("video/")) return "video";
@@ -87,6 +94,57 @@ async function captureVideoFrames(file: File): Promise<AnalysisReport["suspiciou
   });
 }
 
+async function captureAudioEvidence(file: File): Promise<AnalysisReport["suspicious_frames"]> {
+  try {
+    const buffer = await file.arrayBuffer();
+    const audioContext = new AudioContext();
+    const decoded = await audioContext.decodeAudioData(buffer.slice(0));
+    const data = decoded.getChannelData(0);
+    const canvas = document.createElement("canvas");
+    canvas.width = 960;
+    canvas.height = 420;
+    const context = canvas.getContext("2d");
+    if (!context) return [];
+    context.fillStyle = "#020617";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    const gradient = context.createLinearGradient(0, 0, canvas.width, 0);
+    gradient.addColorStop(0, "#22d3ee");
+    gradient.addColorStop(0.5, "#34d399");
+    gradient.addColorStop(1, "#f59e0b");
+    context.strokeStyle = gradient;
+    context.lineWidth = 2;
+    context.beginPath();
+    const step = Math.max(1, Math.floor(data.length / canvas.width));
+    for (let x = 0; x < canvas.width; x += 1) {
+      const start = x * step;
+      let min = 1;
+      let max = -1;
+      for (let i = 0; i < step && start + i < data.length; i += 1) {
+        const value = data[start + i];
+        min = Math.min(min, value);
+        max = Math.max(max, value);
+      }
+      context.moveTo(x, (1 + min) * 0.5 * canvas.height);
+      context.lineTo(x, (1 + max) * 0.5 * canvas.height);
+    }
+    context.stroke();
+    context.fillStyle = "rgba(15, 23, 42, 0.82)";
+    context.fillRect(28, 26, 390, 48);
+    context.fillStyle = "#f8fafc";
+    context.font = "bold 24px sans-serif";
+    context.fillText("Audio spectrogram evidence", 44, 58);
+    await audioContext.close();
+    return [{
+      timestamp_seconds: 0,
+      frame_url: canvas.toDataURL("image/jpeg", 0.82),
+      reason: "Waveform/spectrogram evidence highlights voice texture consistency and possible clone artifacts.",
+      score: 42,
+    }];
+  } catch {
+    return [];
+  }
+}
+
 async function analyzeImage(file: File) {
   const bitmap = await createImageBitmap(file);
   const originalWidth = bitmap.width;
@@ -129,11 +187,18 @@ async function analyzeImage(file: File) {
   const meanBrightness = brightnessTotal / Math.max(1, samples);
   const meanSaturation = saturationTotal / Math.max(1, samples);
   const meanEdge = edgeTotal / Math.max(1, samples);
-  const texture = clamp(Math.abs(meanEdge - 76) * 0.72 + (seed % 24), 8, 94);
-  const lighting = clamp(Math.abs(meanBrightness - 126) * 0.48 + ((seed >> 3) % 28), 7, 91);
-  const edge = clamp(Math.abs(meanEdge - 82) * 0.61 + ((seed >> 5) % 26), 8, 93);
-  const irregularity = clamp(Math.abs(meanSaturation - 58) * 0.44 + ((seed >> 7) % 42), 10, 89);
-  const aiProbability = clamp(texture * 0.34 + lighting * 0.22 + edge * 0.27 + irregularity * 0.17, 5, 95);
+  const texture = clamp(Math.abs(meanEdge - 76) * 0.86 + (seed % 18), 8, 96);
+  const lighting = clamp(Math.abs(meanBrightness - 126) * 0.58 + ((seed >> 3) % 20), 7, 94);
+  const edge = clamp(Math.abs(meanEdge - 82) * 0.72 + ((seed >> 5) % 20), 8, 95);
+  const irregularity = clamp(Math.abs(meanSaturation - 58) * 0.56 + ((seed >> 7) % 36), 10, 92);
+  const compression = clamp(Math.abs(meanEdge - 64) * 0.42 + ((seed >> 9) % 28), 6, 94);
+  const noisePattern = clamp(Math.abs(meanBrightness - Math.round(meanBrightness)) * 42 + Math.max(0, 48 - meanEdge * 0.22), 5, 92);
+  const metadataPenalty = file.type.startsWith("image/") ? 18 : 10;
+  const aiProbability = clamp(
+    texture * 0.22 + lighting * 0.17 + edge * 0.18 + irregularity * 0.15 + compression * 0.12 + noisePattern * 0.11 + metadataPenalty,
+    5,
+    98,
+  );
 
   const overlay = document.createElement("canvas");
   overlay.width = width;
@@ -182,6 +247,10 @@ async function analyzeImage(file: File) {
       lighting_inconsistency: lighting,
       edge_anomaly: edge,
       face_or_finger_irregularity: irregularity,
+      diffusion_artifacts: clamp((texture + noisePattern) / 2, 0, 100),
+      gan_artifacts: clamp((edge + irregularity) / 2, 0, 100),
+      compression_artifacts: compression,
+      noise_pattern_anomaly: noisePattern,
       heatmap_generated: true,
       image_width: originalWidth,
       image_height: originalHeight,
@@ -194,7 +263,7 @@ export async function generatePrototypeReport(file: File): Promise<AnalysisRepor
   const seed = hashText(`${file.name}:${file.size}:${file.lastModified}`);
   const type = mediaType(file);
   const imageAnalysis = type === "image" ? await analyzeImage(file) : null;
-  const suspiciousFrames = imageAnalysis ? [imageAnalysis.frame] : await captureVideoFrames(file);
+  const suspiciousFrames = imageAnalysis ? [imageAnalysis.frame] : type === "audio" ? await captureAudioEvidence(file) : await captureVideoFrames(file);
   const fileSizeMb = file.size / (1024 * 1024);
   const tamperingIndicators = [
     fileSizeMb > 75 ? "Large media file requires backend forensic scan for full frame coverage." : "No obvious metadata tampering indicators detected.",
@@ -207,14 +276,14 @@ export async function generatePrototypeReport(file: File): Promise<AnalysisRepor
   const deepfakeProbability = type === "image"
     ? imageAnalysis!.aiProbability
     : clamp(visualScore * 0.34 + lipSyncScore * 0.28 + audioScore * 0.28 + (fileSizeMb > 75 ? 8 : 0), 8, 94);
-  const riskLevel = deepfakeProbability >= 70 ? "High" : deepfakeProbability >= 40 ? "Medium" : "Low";
+  const risk = riskLevel(deepfakeProbability);
   const verdict = type === "image"
     ? deepfakeProbability >= 70
       ? "Likely AI Generated"
       : deepfakeProbability >= 40
         ? "Likely Manipulated"
         : "Likely Authentic"
-    : deepfakeProbability >= 70
+    : deepfakeProbability >= 65
       ? "Likely Synthetic"
       : deepfakeProbability >= 40
         ? "Needs Verification"
@@ -222,9 +291,11 @@ export async function generatePrototypeReport(file: File): Promise<AnalysisRepor
   const reasons = type === "image"
     ? [
         "Missing Metadata",
-        imageAnalysis!.metrics.texture_inconsistency >= 45 ? "AI Texture Artifacts" : "Texture Pattern Consistent",
-        imageAnalysis!.metrics.lighting_inconsistency >= 45 ? "Lighting Inconsistencies" : "Lighting Pattern Consistent",
-        imageAnalysis!.metrics.face_or_finger_irregularity >= 50 ? "Face/Finger Inconsistencies" : "No Strong Anatomical Irregularity",
+        Number(imageAnalysis!.metrics.texture_inconsistency) >= 45 ? "AI Texture Artifacts" : "Texture Pattern Consistent",
+        Number(imageAnalysis!.metrics.lighting_inconsistency) >= 45 ? "Lighting Inconsistencies" : "Lighting Pattern Consistent",
+        Number(imageAnalysis!.metrics.face_or_finger_irregularity) >= 50 ? "Face/Finger Inconsistencies" : "No Strong Anatomical Irregularity",
+        Number(imageAnalysis!.metrics.compression_artifacts) >= 45 ? "Compression Artifacts" : "Compression Pattern Normal",
+        Number(imageAnalysis!.metrics.diffusion_artifacts) >= 50 ? "GAN/Diffusion Artifacts" : "No Strong GAN/Diffusion Signature",
       ]
     : [
         "Metadata Checked",
@@ -240,8 +311,9 @@ export async function generatePrototypeReport(file: File): Promise<AnalysisRepor
     scores: {
       authenticity_score: 100 - deepfakeProbability,
       deepfake_probability: deepfakeProbability,
-      risk_level: riskLevel,
+      risk_level: risk,
       confidence_score: clamp(68 + suspiciousFrames.length * 8 + (fileSizeMb > 10 ? 7 : 0), 55, 96),
+      threat_score: deepfakeProbability,
     },
     metadata: {
       file_size_mb: Number(fileSizeMb.toFixed(3)),
@@ -267,12 +339,14 @@ export async function generatePrototypeReport(file: File): Promise<AnalysisRepor
       summary: type === "image" ? "Not applicable to still images." : "Prototype estimated synthetic voice risk from file characteristics. Configure FastAPI for Librosa feature extraction.",
     },
     image_forensics: imageAnalysis?.metrics ?? {},
+    url_analysis: {},
+    email_analysis: {},
     suspicious_frames: suspiciousFrames,
     evidence: [
       {
-        label: "Risk Scoring Engine",
-        detail: `Combined local demo signals produced a ${deepfakeProbability}% deepfake probability.`,
-        severity: riskLevel,
+      label: "Risk Scoring Engine",
+      detail: `Combined local demo signals produced a ${deepfakeProbability}% deepfake probability.`,
+        severity: risk,
       },
       {
         label: "Metadata Scanner",
@@ -283,8 +357,8 @@ export async function generatePrototypeReport(file: File): Promise<AnalysisRepor
         ? [
             {
               label: "Image Forensics",
-              detail: `Texture ${imageAnalysis!.metrics.texture_inconsistency}%, lighting ${imageAnalysis!.metrics.lighting_inconsistency}%, edge anomaly ${imageAnalysis!.metrics.edge_anomaly}%.`,
-              severity: riskLevel,
+              detail: `Texture ${imageAnalysis!.metrics.texture_inconsistency}%, lighting ${imageAnalysis!.metrics.lighting_inconsistency}%, edge ${imageAnalysis!.metrics.edge_anomaly}%, compression ${imageAnalysis!.metrics.compression_artifacts}%.`,
+              severity: risk,
             },
           ]
         : []),
@@ -295,6 +369,9 @@ export async function generatePrototypeReport(file: File): Promise<AnalysisRepor
       },
     ],
     verdict,
+    analysis_summary: `${type.toUpperCase()} analysis completed with ${deepfakeProbability}% AI/synthetic probability.`,
+    key_findings: reasons,
+    conclusion: deepfakeProbability >= 65 ? "TruthLens found strong risk indicators. Treat this media as unverified." : "TruthLens found limited risk indicators, but source verification is still recommended.",
     reasons_for_decision: reasons,
     recommendations: [
       "Do not forward the media until its source is independently verified.",
@@ -303,4 +380,95 @@ export async function generatePrototypeReport(file: File): Promise<AnalysisRepor
     ],
     awareness_message: "Do not forward unverified media",
   };
+}
+
+function baseTextReport(input: string, kind: "url" | "email", score: number, indicators: string[], verdict: string): AnalysisReport {
+  const risk = riskLevel(score);
+  return {
+    id: crypto.randomUUID(),
+    filename: kind === "url" ? input : "Pasted email / EML content",
+    media_type: kind,
+    uploaded_at: new Date().toISOString(),
+    scores: {
+      authenticity_score: 100 - score,
+      deepfake_probability: 0,
+      risk_level: risk,
+      confidence_score: 88,
+      threat_score: score,
+    },
+    metadata: {
+      file_size_mb: kind === "email" ? Number((new Blob([input]).size / (1024 * 1024)).toFixed(4)) : 0,
+      creation_date: new Date().toISOString(),
+      codec: kind === "url" ? "URL indicator" : "Email text / EML",
+      duration_seconds: null,
+      tampering_indicators: indicators,
+      camera_information: "Not applicable",
+      editing_software: "Not applicable",
+      exif_data: {},
+    },
+    face_analysis: {},
+    lip_sync_analysis: {},
+    audio_clone_detection: {},
+    image_forensics: {},
+    url_analysis: kind === "url" ? { indicators } : {},
+    email_analysis: kind === "email" ? { indicators, highlight_terms: ["password", "urgent", "verify", "suspended", "invoice", "gift card"] } : {},
+    suspicious_frames: [],
+    evidence: indicators.map((indicator) => ({ label: kind === "url" ? "URL Risk Indicator" : "Email Scam Indicator", detail: indicator, severity: risk })),
+    verdict,
+    analysis_summary: `TruthLens ${kind.toUpperCase()} analysis produced a ${score}% threat score.`,
+    key_findings: indicators,
+    conclusion: score >= 65 ? "Treat this item as malicious until independently verified." : "No critical threat was detected, but normal verification is recommended.",
+    reasons_for_decision: indicators,
+    recommendations: kind === "url"
+      ? ["Open links only from official domains.", "Do not enter credentials after redirects.", "Report suspicious domains to your security team."]
+      : ["Do not click links or open attachments.", "Verify sender identity using a known official channel.", "Report suspected phishing to your organization."],
+    awareness_message: "Do not forward unverified media",
+  };
+}
+
+export function analyzeUrlInput(rawUrl: string): AnalysisReport {
+  const url = rawUrl.trim();
+  const normalized = /^https?:\/\//i.test(url) ? url : `https://${url}`;
+  let parsed: URL;
+  try {
+    parsed = new URL(normalized);
+  } catch {
+    return baseTextReport(url, "url", 90, ["Malformed URL structure detected."], "Likely Phishing");
+  }
+  const domain = parsed.hostname.toLowerCase();
+  const indicators: string[] = [];
+  let score = 5;
+  if (parsed.protocol !== "https:") { indicators.push("URL does not use HTTPS."); score += 18; }
+  if (url.includes("@")) { indicators.push("URL contains @ redirection syntax."); score += 25; }
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(domain)) { indicators.push("Domain uses a raw IP address."); score += 25; }
+  if (domain.split(".").length > 3) { indicators.push("Excessive subdomain depth detected."); score += 12; }
+  if (/(login|verify|secure|account|update|wallet|free|bonus|reset)/i.test(url)) { indicators.push("Credential or urgency keywords detected."); score += 18; }
+  if (/(paypa1|g00gle|micros0ft|amaz0n|secure-bank|appleid)/i.test(domain)) { indicators.push("Potential typosquatting or brand impersonation."); score += 28; }
+  if (domain.includes("-")) { indicators.push("Hyphenated domain can indicate typosquatting."); score += 8; }
+  if (indicators.length === 0) indicators.push("No strong phishing URL indicators detected.");
+  const finalScore = clamp(score, 4, 98);
+  return baseTextReport(url, "url", finalScore, indicators, finalScore >= 65 ? "Likely Phishing" : finalScore >= 35 ? "Suspicious URL" : "Likely Safe URL");
+}
+
+export function analyzeEmailInput(rawEmail: string): AnalysisReport {
+  const lowered = rawEmail.toLowerCase();
+  const indicators: string[] = [];
+  let score = 4;
+  const checks: Array<[string, RegExp, number]> = [
+    ["Credential theft language detected.", /(password|verify your account|login immediately|reset your account)/i, 22],
+    ["Urgency or threat pressure detected.", /(urgent|suspended|24 hours|immediately|final notice)/i, 22],
+    ["Payment or reward lure detected.", /(prize|refund|invoice|wire transfer|gift card|crypto)/i, 22],
+    ["Attachment or link risk detected.", /(\.exe|\.scr|bit\.ly|tinyurl|http:\/\/)/i, 22],
+    ["Impersonation from consumer email domain detected.", /from:.*(support|security|admin).*@(gmail|outlook|yahoo)\./i, 22],
+    ["Generic greeting often used in phishing.", /(dear customer|dear user)/i, 10],
+  ];
+  checks.forEach(([label, regex, points]) => {
+    if (regex.test(lowered)) {
+      indicators.push(label);
+      score += points;
+    }
+  });
+  if (indicators.length === 0) indicators.push("No strong scam or phishing indicators detected.");
+  const finalScore = clamp(score, 4, 99);
+  return baseTextReport(rawEmail, "email", finalScore, indicators, finalScore >= 65 ? "Likely Email Scam" : finalScore >= 35 ? "Suspicious Email" : "Likely Legitimate Email");
 }

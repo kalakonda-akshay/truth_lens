@@ -12,11 +12,15 @@ TruthLens is an AI-powered Deepfake and Synthetic Media Verification Platform bu
 ## Features
 
 - Cybersecurity-themed landing page
-- Unified drag-and-drop upload for JPG, JPEG, PNG, WEBP, video, and audio
-- Automatic image/video/audio classification and routing
+- Unified dashboard for images, videos, audio, URLs, and emails
+- Unified drag-and-drop upload for JPG, JPEG, PNG, WEBP, video, audio, and EML/text email files
+- Automatic image/video/audio/URL/email classification and routing
 - Metadata scanner with EXIF, camera, editing software, codec, and tampering indicators
 - Image forensics for texture, lighting, edge, and face/finger irregularities
 - Suspicious-region bounding boxes and heatmap overlays
+- URL phishing detection for typosquatting, suspicious domains, credential keywords, and redirect syntax
+- Email scam detection for impersonation, urgency, credential theft, attachment/link risk, and phishing language
+- Audio waveform/spectrogram evidence visualization in browser-safe mode
 - OpenCV frame extraction with suspicious-frame simulation
 - Lip-sync forensic scoring
 - Librosa-based audio clone confidence scoring
@@ -25,6 +29,7 @@ TruthLens is an AI-powered Deepfake and Synthetic Media Verification Platform bu
 - Cyberathon Judge Mode with six built-in image/video/audio sample reports
 - Session dashboard for total, media-type, and high-risk scan counts
 - Improved PDF reports with summary, evidence, risk, and recommendations
+- Official TruthLens report template with Report ID, analysis date, summary, metadata, visual analysis, AI artifact detection, evidence visualization, findings, conclusion, recommendations, disclaimer, and TEAM TRUTHLENS footer
 
 ## Local Development
 

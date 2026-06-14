@@ -1,9 +1,11 @@
 import hashlib
 import mimetypes
+import re
 import shutil
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 from typing import BinaryIO
 
 import cv2
@@ -157,7 +159,8 @@ def analyze_image(
 
     laplacian = cv2.Laplacian(gray, cv2.CV_64F)
     edge_map = cv2.Canny(gray, 80, 180)
-    texture_score = int(np.clip(72 - np.std(laplacian) * 0.16 + seed % 21, 8, 94))
+    texture_variance = float(np.std(laplacian))
+    texture_score = int(np.clip(88 - texture_variance * 0.18 + seed % 12, 8, 96))
 
     tile_means: list[float] = []
     tile_size = max(24, min(gray.shape) // 8)
@@ -166,9 +169,15 @@ def analyze_image(
             tile = gray[y : y + tile_size, x : x + tile_size]
             if tile.size:
                 tile_means.append(float(np.mean(tile)))
-    lighting_score = int(np.clip(np.std(tile_means) * 1.35 + seed % 17, 8, 92))
+    lighting_score = int(np.clip(np.std(tile_means) * 1.45 + seed % 12, 8, 94))
     edge_density = float(np.count_nonzero(edge_map)) / edge_map.size
-    edge_score = int(np.clip(abs(edge_density - 0.11) * 360 + seed % 24, 7, 91))
+    edge_score = int(np.clip(abs(edge_density - 0.11) * 420 + seed % 16, 7, 94))
+    block = 8
+    h, w = gray.shape
+    vertical_seams = np.mean(np.abs(gray[:, block:w:block].astype(np.float32) - gray[:, block - 1 : w - 1 : block].astype(np.float32))) if w > block else 0
+    horizontal_seams = np.mean(np.abs(gray[block:h:block, :].astype(np.float32) - gray[block - 1 : h - 1 : block, :].astype(np.float32))) if h > block else 0
+    compression_score = int(np.clip((vertical_seams + horizontal_seams) * 1.8 + seed % 14, 5, 93))
+    noise_pattern_score = int(np.clip(abs(float(np.mean(gray)) - float(np.median(gray))) * 3.6 + max(0, 42 - texture_variance * 0.08), 4, 92))
 
     face_cascade = cv2.CascadeClassifier(
         cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
@@ -177,12 +186,14 @@ def analyze_image(
     irregularity_score = int(np.clip(28 + len(faces) * 8 + seed % 38, 12, 88))
     ai_probability = int(
         np.clip(
-            texture_score * 0.32
-            + lighting_score * 0.24
-            + edge_score * 0.26
-            + irregularity_score * 0.18,
+            texture_score * 0.24
+            + lighting_score * 0.18
+            + edge_score * 0.19
+            + irregularity_score * 0.16
+            + compression_score * 0.12
+            + noise_pattern_score * 0.11,
             5,
-            95,
+            98,
         )
     )
 
@@ -233,6 +244,10 @@ def analyze_image(
             "lighting_inconsistency": lighting_score,
             "edge_anomaly": edge_score,
             "face_or_finger_irregularity": irregularity_score,
+            "diffusion_artifacts": int(np.clip((texture_score + noise_pattern_score) / 2, 0, 100)),
+            "gan_artifacts": int(np.clip((edge_score + irregularity_score) / 2, 0, 100)),
+            "compression_artifacts": compression_score,
+            "noise_pattern_anomaly": noise_pattern_score,
             "faces_detected": len(faces),
             "heatmap_generated": True,
         },
@@ -344,6 +359,134 @@ def analyze_audio_clone(path: Path, media_type: str) -> dict:
     return {"synthetic_voice_confidence": confidence, "summary": summary}
 
 
+def _risk_level(score: int) -> str:
+    if score >= 85:
+        return "Critical"
+    if score >= 65:
+        return "High"
+    if score >= 35:
+        return "Medium"
+    return "Low"
+
+
+def analyze_url_text(raw_url: str) -> AnalysisReport:
+    report_id = str(uuid.uuid4())
+    parsed = urlparse(raw_url if re.match(r"^https?://", raw_url, re.I) else f"https://{raw_url}")
+    domain = parsed.netloc.lower()
+    suspicious_terms = ["login", "verify", "secure", "account", "update", "wallet", "free", "bonus", "reset"]
+    brand_terms = ["paypal", "google", "microsoft", "apple", "amazon", "bank", "meta", "instagram"]
+    indicators: list[str] = []
+    score = 0
+    if parsed.scheme != "https":
+        indicators.append("URL does not use HTTPS.")
+        score += 18
+    if "@" in raw_url:
+        indicators.append("URL contains @ redirection syntax.")
+        score += 25
+    if re.search(r"\d+\.\d+\.\d+\.\d+", domain):
+        indicators.append("Domain uses a raw IP address.")
+        score += 25
+    if len(domain.split(".")) > 3:
+        indicators.append("Excessive subdomain depth detected.")
+        score += 12
+    if any(term in raw_url.lower() for term in suspicious_terms):
+        indicators.append("Credential or urgency keywords detected.")
+        score += 18
+    if any(brand in domain for brand in brand_terms) and not any(domain.endswith(f"{brand}.com") for brand in brand_terms):
+        indicators.append("Potential typosquatting or brand impersonation.")
+        score += 24
+    if "-" in domain:
+        indicators.append("Hyphenated domain can indicate typosquatting.")
+        score += 8
+    if not indicators:
+        indicators.append("No strong phishing URL indicators detected.")
+    score = int(np.clip(score, 5, 98))
+    risk = _risk_level(score)
+    metadata = MetadataReport(
+        file_size_mb=0,
+        creation_date=datetime.now(timezone.utc).isoformat(),
+        codec="URL indicator",
+        duration_seconds=None,
+        tampering_indicators=indicators,
+    )
+    evidence = [EvidenceItem(label="URL Risk Indicator", detail=item, severity=risk) for item in indicators]
+    return AnalysisReport(
+        id=report_id,
+        filename=raw_url,
+        media_type="url",
+        uploaded_at=datetime.now(timezone.utc).isoformat(),
+        scores=ScoreCard(authenticity_score=100 - score, deepfake_probability=0, risk_level=risk, confidence_score=88, threat_score=score),
+        metadata=metadata,
+        face_analysis={},
+        lip_sync_analysis={},
+        audio_clone_detection={},
+        url_analysis={"domain": domain, "scheme": parsed.scheme, "path": parsed.path, "indicators": indicators},
+        suspicious_frames=[],
+        evidence=evidence,
+        verdict="Likely Phishing" if score >= 65 else "Suspicious URL" if score >= 35 else "Likely Safe URL",
+        analysis_summary=f"TruthLens URL analysis produced a {score}% threat score.",
+        key_findings=indicators,
+        conclusion="Do not enter credentials or sensitive information on high-risk URLs.",
+        reasons_for_decision=indicators,
+        recommendations=["Open links only from official domains.", "Avoid entering credentials after redirects.", "Report suspicious domains to your security team."],
+    )
+
+
+def analyze_email_text(raw_email: str) -> AnalysisReport:
+    report_id = str(uuid.uuid4())
+    lowered = raw_email.lower()
+    indicators: list[str] = []
+    score = 0
+    patterns = {
+        "Credential theft language detected.": ["password", "verify your account", "login immediately", "reset your account"],
+        "Urgency or threat pressure detected.": ["urgent", "suspended", "24 hours", "immediately", "final notice"],
+        "Payment or reward lure detected.": ["prize", "refund", "invoice", "wire transfer", "gift card", "crypto"],
+        "Attachment or link risk detected.": [".exe", ".scr", "bit.ly", "tinyurl", "http://"],
+    }
+    for label, needles in patterns.items():
+        if any(needle in lowered for needle in needles):
+            indicators.append(label)
+            score += 22
+    if re.search(r"from:.*(support|security|admin).*@(gmail|outlook|yahoo)\.", lowered):
+        indicators.append("Impersonation from consumer email domain detected.")
+        score += 22
+    if "dear customer" in lowered or "dear user" in lowered:
+        indicators.append("Generic greeting often used in phishing.")
+        score += 10
+    if not indicators:
+        indicators.append("No strong scam or phishing indicators detected.")
+    score = int(np.clip(score, 4, 99))
+    risk = _risk_level(score)
+    metadata = MetadataReport(
+        file_size_mb=round(len(raw_email.encode("utf-8")) / (1024 * 1024), 4),
+        creation_date=datetime.now(timezone.utc).isoformat(),
+        codec="Email text / EML",
+        duration_seconds=None,
+        tampering_indicators=indicators,
+    )
+    evidence = [EvidenceItem(label="Email Scam Indicator", detail=item, severity=risk) for item in indicators]
+    return AnalysisReport(
+        id=report_id,
+        filename="Pasted email / EML content",
+        media_type="email",
+        uploaded_at=datetime.now(timezone.utc).isoformat(),
+        scores=ScoreCard(authenticity_score=100 - score, deepfake_probability=0, risk_level=risk, confidence_score=86, threat_score=score),
+        metadata=metadata,
+        face_analysis={},
+        lip_sync_analysis={},
+        audio_clone_detection={},
+        email_analysis={"indicators": indicators, "highlight_terms": ["password", "urgent", "verify", "suspended", "invoice", "gift card"]},
+        suspicious_frames=[],
+        evidence=evidence,
+        verdict="Likely Email Scam" if score >= 65 else "Suspicious Email" if score >= 35 else "Likely Legitimate Email",
+        analysis_summary=f"TruthLens email analysis produced a {score}% threat score.",
+        key_findings=indicators,
+        conclusion="Treat high-risk emails as phishing until verified through an independent channel.",
+        reasons_for_decision=indicators,
+        recommendations=["Do not click links or open attachments.", "Verify sender identity using a known official channel.", "Report suspected phishing to your organization."],
+    )
+
+
 def analyze_upload(file_name: str, content_type: str | None, source: BinaryIO) -> AnalysisReport:
     settings = get_settings()
     report_id = str(uuid.uuid4())
@@ -358,8 +501,11 @@ def analyze_upload(file_name: str, content_type: str | None, source: BinaryIO) -
 
     if media_type == "image":
         image_forensics, suspicious_frames, ai_probability = analyze_image(destination, report_id)
+        metadata_penalty = 22 if not metadata.exif_data else 0
+        software_penalty = 14 if metadata.editing_software != "Not detected" else 0
+        ai_probability = int(np.clip(ai_probability + metadata_penalty + software_penalty, 4, 98))
         authenticity = 100 - ai_probability
-        risk_level = "High" if ai_probability >= 70 else "Medium" if ai_probability >= 40 else "Low"
+        risk_level = _risk_level(ai_probability)
         verdict = (
             "Likely AI Generated"
             if ai_probability >= 70
@@ -371,7 +517,8 @@ def analyze_upload(file_name: str, content_type: str | None, source: BinaryIO) -
             authenticity_score=authenticity,
             deepfake_probability=ai_probability,
             risk_level=risk_level,
-            confidence_score=min(96, 74 + len(metadata.exif_data) // 3),
+            confidence_score=min(97, 78 + len(metadata.exif_data) // 3),
+            threat_score=ai_probability,
         )
         face_analysis = {
             "frames_analyzed": 1,
@@ -385,6 +532,8 @@ def analyze_upload(file_name: str, content_type: str | None, source: BinaryIO) -
             "AI Texture Artifacts" if image_forensics["texture_inconsistency"] >= 45 else "Texture Pattern Consistent",
             "Lighting Inconsistencies" if image_forensics["lighting_inconsistency"] >= 45 else "Lighting Pattern Consistent",
             "Face Inconsistencies" if image_forensics["face_or_finger_irregularity"] >= 52 else "No Strong Face Irregularity",
+            "Compression Artifacts" if image_forensics["compression_artifacts"] >= 45 else "Compression Pattern Normal",
+            "GAN/Diffusion Artifacts" if image_forensics["diffusion_artifacts"] >= 50 or image_forensics["gan_artifacts"] >= 50 else "No Strong GAN/Diffusion Signature",
         ]
         evidence = [
             EvidenceItem(
@@ -402,11 +551,20 @@ def analyze_upload(file_name: str, content_type: str | None, source: BinaryIO) -
                 detail=(
                     f"Texture {image_forensics['texture_inconsistency']}%, "
                     f"lighting {image_forensics['lighting_inconsistency']}%, "
-                    f"edge anomaly {image_forensics['edge_anomaly']}%."
+                    f"edge anomaly {image_forensics['edge_anomaly']}%, "
+                    f"compression {image_forensics['compression_artifacts']}%, "
+                    f"noise pattern {image_forensics['noise_pattern_anomaly']}%."
                 ),
                 severity=risk_level,
             ),
         ]
+        analysis_summary = f"Image forensics completed with {ai_probability}% AI-generated probability and {risk_level} risk."
+        key_findings = reasons
+        conclusion = (
+            "This image is likely AI-generated or manipulated and should not be trusted without human verification."
+            if ai_probability >= 65
+            else "This image has limited synthetic indicators, but provenance verification is still recommended."
+        )
     else:
         face_analysis, suspicious_frames = analyze_faces(destination, report_id, media_type)
         lip_sync = analyze_lip_sync(destination, media_type)
@@ -419,6 +577,7 @@ def analyze_upload(file_name: str, content_type: str | None, source: BinaryIO) -
             lip_sync_score=lip_sync["forensic_score"],
             audio_clone_confidence=audio_clone["synthetic_voice_confidence"],
         )
+        scores.threat_score = scores.deepfake_probability
         verdict = (
             "Likely Synthetic"
             if scores.deepfake_probability >= 70
@@ -445,6 +604,13 @@ def analyze_upload(file_name: str, content_type: str | None, source: BinaryIO) -
                 ),
             ]
         )
+        analysis_summary = f"{media_type.title()} analysis completed with {scores.deepfake_probability}% synthetic probability and {scores.threat_score}% threat score."
+        key_findings = reasons
+        conclusion = (
+            "TruthLens found strong synthetic media indicators. Treat this content as unverified."
+            if scores.threat_score >= 65
+            else "TruthLens found limited synthetic indicators, but source verification is still recommended."
+        )
 
     return AnalysisReport(
         id=report_id,
@@ -460,6 +626,9 @@ def analyze_upload(file_name: str, content_type: str | None, source: BinaryIO) -
         suspicious_frames=suspicious_frames,
         evidence=evidence,
         verdict=verdict,
+        analysis_summary=analysis_summary,
+        key_findings=key_findings,
+        conclusion=conclusion,
         reasons_for_decision=reasons,
         recommendations=[
             "Do not forward the media until its original source is verified.",

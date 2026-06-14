@@ -3,7 +3,7 @@ import type { AnalysisReport } from "@/lib/api";
 export type DemoSample = {
   id: string;
   title: string;
-  mediaType: "image" | "video" | "audio";
+  mediaType: "image" | "video" | "audio" | "url" | "email";
   risk: "Low" | "High";
   description: string;
 };
@@ -15,6 +15,8 @@ export const demoSamples: DemoSample[] = [
   { id: "deepfake-video", title: "Deepfake Video", mediaType: "video", risk: "High", description: "Facial boundary artifacts and lip-sync mismatch." },
   { id: "real-audio", title: "Real Audio", mediaType: "audio", risk: "Low", description: "Natural acoustic variation and voice texture." },
   { id: "voice-clone", title: "Voice Clone Audio", mediaType: "audio", risk: "High", description: "Over-stable spectral texture and clone indicators." },
+  { id: "phishing-url", title: "Phishing URL", mediaType: "url", risk: "High", description: "Typosquatting, credential keywords, and suspicious URL structure." },
+  { id: "scam-email", title: "Scam Email", mediaType: "email", risk: "High", description: "Impersonation, urgency pressure, and credential-theft language." },
 ];
 
 function demoVisual(sample: DemoSample) {
@@ -58,7 +60,7 @@ export function createDemoReport(sample: DemoSample): AnalysisReport {
         heatmap_generated: true,
       }
     : {};
-  const suspicious = high || sample.mediaType === "image"
+  const suspicious = (high || sample.mediaType === "image") && !["url", "email"].includes(sample.mediaType)
     ? [{
         timestamp_seconds: sample.mediaType === "video" ? 4.8 : 0,
         frame_url: demoVisual(sample),
@@ -67,7 +69,11 @@ export function createDemoReport(sample: DemoSample): AnalysisReport {
       }]
     : [];
 
-  const reasons = sample.mediaType === "image"
+  const reasons = sample.mediaType === "url"
+    ? ["Potential Typosquatting", "Credential Harvesting Keywords", "Suspicious Domain Structure", "Redirect Risk Indicators"]
+    : sample.mediaType === "email"
+      ? ["Impersonation Detected", "Urgency Pressure", "Credential Theft Language", "Suspicious Link Pattern"]
+      : sample.mediaType === "image"
     ? high
       ? ["Missing Metadata", "AI Texture Artifacts", "Lighting Inconsistencies", "Face/Finger Inconsistencies"]
       : ["Camera Metadata Present", "Texture Pattern Consistent", "Lighting Pattern Consistent", "No Face Irregularity"]
@@ -81,7 +87,7 @@ export function createDemoReport(sample: DemoSample): AnalysisReport {
 
   return {
     id: crypto.randomUUID(),
-    filename: `${sample.id}.${sample.mediaType === "image" ? "jpg" : sample.mediaType === "video" ? "mp4" : "wav"}`,
+    filename: `${sample.id}.${sample.mediaType === "image" ? "jpg" : sample.mediaType === "video" ? "mp4" : sample.mediaType === "audio" ? "wav" : "txt"}`,
     media_type: sample.mediaType,
     uploaded_at: new Date().toISOString(),
     scores: {
@@ -89,12 +95,13 @@ export function createDemoReport(sample: DemoSample): AnalysisReport {
       deepfake_probability: probability,
       risk_level: sample.risk,
       confidence_score: high ? 94 : 91,
+      threat_score: probability,
     },
     metadata: {
       file_size_mb: sample.mediaType === "image" ? 2.48 : sample.mediaType === "video" ? 18.72 : 4.2,
       creation_date: new Date().toISOString(),
       codec: sample.mediaType === "image" ? "JPEG 1920x1080" : sample.mediaType === "video" ? "H.264 / AAC" : "WAV PCM",
-      duration_seconds: sample.mediaType === "image" ? null : sample.mediaType === "video" ? 12.4 : 8.8,
+      duration_seconds: sample.mediaType === "image" || sample.mediaType === "url" || sample.mediaType === "email" ? null : sample.mediaType === "video" ? 12.4 : 8.8,
       tampering_indicators: high ? ["Metadata chain is incomplete.", "Forensic signature differs across regions."] : ["No obvious metadata tampering indicators detected."],
       camera_information: sample.mediaType === "image" && !high ? "TruthLens Demo Camera X1" : "Not available",
       editing_software: high ? "Possible generative/editing pipeline" : "Not detected",
@@ -114,6 +121,8 @@ export function createDemoReport(sample: DemoSample): AnalysisReport {
       summary: sample.mediaType === "image" ? "Not applicable." : high ? "Synthetic voice indicators detected." : "Natural voice variation detected.",
     },
     image_forensics: imageMetrics,
+    url_analysis: sample.mediaType === "url" ? { indicators: reasons, domain: "secure-bank-login.example" } : {},
+    email_analysis: sample.mediaType === "email" ? { indicators: reasons, highlight_terms: ["verify", "password", "urgent"] } : {},
     suspicious_frames: suspicious,
     evidence: reasons.map((reason, index) => ({
       label: reason,
@@ -122,7 +131,12 @@ export function createDemoReport(sample: DemoSample): AnalysisReport {
     })),
     verdict: sample.mediaType === "image"
       ? high ? "Likely AI Generated" : "Likely Authentic"
+      : sample.mediaType === "url" ? "Likely Phishing"
+      : sample.mediaType === "email" ? "Likely Email Scam"
       : high ? "Likely Synthetic" : "Likely Authentic",
+    analysis_summary: `Judge sample ${sample.title} produced a ${probability}% threat score.`,
+    key_findings: reasons,
+    conclusion: high ? "TruthLens recommends treating this evidence as unsafe until independently verified." : "TruthLens found low-risk signals in this sample.",
     reasons_for_decision: reasons,
     recommendations: high
       ? ["Do not forward this media.", "Verify against the original source.", "Escalate to a digital forensics specialist."]

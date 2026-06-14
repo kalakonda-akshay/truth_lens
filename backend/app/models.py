@@ -8,6 +8,7 @@ class ScoreCard(BaseModel):
     deepfake_probability: int
     risk_level: str
     confidence_score: int
+    threat_score: int = 0
 
 
 class MetadataReport(BaseModel):
@@ -45,9 +46,14 @@ class AnalysisReport(BaseModel):
     lip_sync_analysis: dict[str, Any]
     audio_clone_detection: dict[str, Any]
     image_forensics: dict[str, Any] = Field(default_factory=dict)
+    url_analysis: dict[str, Any] = Field(default_factory=dict)
+    email_analysis: dict[str, Any] = Field(default_factory=dict)
     suspicious_frames: list[SuspiciousFrame]
     evidence: list[EvidenceItem]
     verdict: str = "Needs Review"
+    analysis_summary: str = "Automated TruthLens forensic analysis completed."
+    key_findings: list[str] = Field(default_factory=list)
+    conclusion: str = "Results are probabilistic and should be reviewed before high-impact decisions."
     reasons_for_decision: list[str] = Field(default_factory=list)
     recommendations: list[str] = Field(
         default_factory=lambda: [
