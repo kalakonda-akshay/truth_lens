@@ -4,7 +4,7 @@ import { useCallback, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { CloudUpload, FileAudio, FileImage, FileText, FileVideo, Link as LinkIcon, ShieldCheck } from "lucide-react";
 import { API_URL, fetchTextAnalysis, normalizeReport } from "@/lib/api";
-import { analyzeEmailInput, analyzeUrlInput, generatePrototypeReport } from "@/lib/prototypeReport";
+import { analyzeEmailInput, analyzeUrlInput } from "@/lib/textAnalysis";
 import { recordScan } from "@/lib/scanStats";
 
 const analysisModes = [
@@ -130,7 +130,7 @@ export function UploadPanel() {
         if (!response.ok) throw new Error("Analysis failed");
         report = normalizeReport(await response.json());
       } else {
-        report = await generatePrototypeReport(file);
+        throw new Error("Model-backed media analysis requires the FastAPI backend.");
       }
 
       window.clearInterval(timer);
@@ -139,7 +139,7 @@ export function UploadPanel() {
       setProgress(100);
       router.push(`/results/${report.id}`);
     } catch {
-      setError(API_URL ? "Analysis service timed out or is unavailable. Check the FastAPI backend URL." : "Local browser analysis failed for this file. Try a JPG, PNG, shorter MP4, MP3, or WAV file.");
+      setError(API_URL ? "Analysis service timed out or is unavailable. Check the FastAPI backend URL." : "Model-backed media analysis requires NEXT_PUBLIC_API_URL to point to the FastAPI backend.");
       setProgress(0);
     } finally {
       if (timer) window.clearInterval(timer);

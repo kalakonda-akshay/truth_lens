@@ -8,8 +8,10 @@ venv/
 *.log
 backend/storage/uploads/*
 backend/storage/frames/*
+backend/storage/models/*
 !backend/storage/uploads/.gitkeep
 !backend/storage/frames/.gitkeep
+!backend/storage/models/.gitkeep
 
 node_modules/
 .next/

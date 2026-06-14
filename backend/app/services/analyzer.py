@@ -8,12 +8,14 @@ from typing import BinaryIO
 from urllib.parse import urlparse
 
 import cv2
-import librosa
 import numpy as np
+import soundfile as sf
 from PIL import ExifTags, Image
 
 from app.config import get_settings
 from app.models import AnalysisReport, EvidenceItem, MetadataReport, ScoreCard, SuspiciousFrame
+from app.services.content_models import infer_audio_ai_probability, infer_image_ai_probability, infer_video_ai_probability
+from app.services.pretrained_models import infer_pretrained_audio, infer_pretrained_images
 from app.services.risk import calculate_scores, risk_level
 
 
@@ -37,6 +39,17 @@ def ai_classification(probability: int) -> str:
     if probability >= 0:
         return "Authentic"
     return "Unable To Determine"
+
+
+def _dedupe(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    output: list[str] = []
+    for item in items:
+        key = item.split(":", 1)[0].strip().lower()
+        if key and key not in seen:
+            seen.add(key)
+            output.append(item)
+    return output
 
 
 def _media_type(path: Path, content_type: str | None) -> str:
@@ -68,7 +81,8 @@ def _codec_and_duration(path: Path, media_type: str) -> tuple[str, float | None]
         return codec, round(frames / fps, 2) if fps else None
     if media_type == "audio":
         try:
-            return f"{path.suffix.lower().replace('.', '').upper()} audio stream", round(librosa.get_duration(path=str(path)), 2)
+            info = sf.info(str(path))
+            return f"{path.suffix.lower().replace('.', '').upper()} audio stream", round(info.frames / max(info.samplerate, 1), 2)
         except Exception:
             return "Audio metadata unavailable", None
     return mimetypes.guess_type(path.name)[0] or "Unknown", None
@@ -187,16 +201,31 @@ def analyze_image(path: Path, report_id: str, metadata: MetadataReport) -> tuple
     metrics["faces_detected"] = int(len(faces))
     metrics["diffusion_artifacts"] = int(np.clip((metrics["texture_inconsistency"] + metrics["noise_pattern_anomaly"]) / 2, 0, 100))
     metrics["gan_artifacts"] = int(np.clip((metrics["edge_anomaly"] + metrics["face_anomaly"]) / 2, 0, 100))
-    metadata_score = 0
-    if not metadata.exif_data:
-        metadata_score += 18
-    if metadata.editing_software != "Not detected":
-        metadata_score += 16
+    has_camera_exif = bool(metadata.exif_data and metadata.camera_information != "Not available")
+    content_model = infer_image_ai_probability(image, has_camera_exif)
+    pretrained_model = infer_pretrained_images([Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))])
     visual_score = int(np.clip(np.mean([value for key, value in metrics.items() if key != "faces_detected"]), 0, 100))
-    ai_probability = int(np.clip(visual_score * 0.72 + metadata_score, 0, 100))
+    ai_probability = pretrained_model.probability if pretrained_model.available else content_model.probability
 
     evidence: list[EvidenceItem] = []
     findings: list[str] = []
+    evidence.append(EvidenceItem(
+        label="Pretrained AI Image Detector",
+        detail=(
+            f"{pretrained_model.model_name} output: {pretrained_model.probability}% AI, label {pretrained_model.label}."
+            if pretrained_model.available
+            else f"{pretrained_model.model_name} unavailable; forensic content model used. {pretrained_model.error}"
+        ),
+        severity=risk_level(ai_probability),
+    ))
+    evidence.append(EvidenceItem(
+        label="Image Forensic Content Model",
+        detail=f"{content_model.label} probability: {content_model.probability}%.",
+        severity=risk_level(content_model.probability),
+    ))
+    if pretrained_model.available:
+        findings.append(f"Pretrained image detector probability: {pretrained_model.probability}% ({pretrained_model.label})")
+    findings.extend(content_model.evidence)
     thresholds = {
         "texture_inconsistency": ("Texture inconsistency detected", 45),
         "lighting_inconsistency": ("Lighting mismatch detected", 45),
@@ -239,11 +268,18 @@ def analyze_image(path: Path, report_id: str, metadata: MetadataReport) -> tuple
             suspicious.append(SuspiciousFrame(timestamp_seconds=0, frame_url=f"/frames/{frame_name}", reason="Heatmap is derived from measured local edge/noise residual anomalies.", score=visual_score))
 
     metrics.update({
-        "summary": "OpenCV measured texture variance, lighting variance, edge density, compression seams, residual noise, and face-region anomalies.",
+        "summary": "Image content model evaluated pixel texture, residual noise, frequency spectrum, compression seams, camera metadata support, and OpenCV visual anomalies.",
         "heatmap_generated": bool(suspicious),
         "resolution": f"{original.shape[1]}x{original.shape[0]}",
+        "ai_model": content_model.label,
+        "ai_model_probability": ai_probability,
+        "pretrained_model": pretrained_model.model_name,
+        "pretrained_model_available": pretrained_model.available,
+        "pretrained_model_probability": pretrained_model.probability,
+        "forensic_model_probability": content_model.probability,
+        **{f"model_{key}": value for key, value in content_model.features.items()},
     })
-    return metrics, suspicious, ai_probability, evidence, findings
+    return metrics, suspicious, ai_probability, evidence, _dedupe(findings)
 
 
 def _compression_seam_score(gray: np.ndarray) -> int:
@@ -339,6 +375,7 @@ def analyze_video(path: Path, report_id: str, media_type: str) -> tuple[dict, li
     findings: list[str] = []
     frame_scores: list[int] = []
     temporal_diffs: list[float] = []
+    model_frames: list[Image.Image] = []
     metric_max = {
         "texture_anomaly": 0,
         "edge_anomaly": 0,
@@ -354,6 +391,8 @@ def analyze_video(path: Path, report_id: str, media_type: str) -> tuple[dict, li
         if not ok:
             continue
         metrics, normalized_frame = _video_frame_metrics(frame)
+        if len(model_frames) < 8:
+            model_frames.append(Image.fromarray(cv2.cvtColor(normalized_frame, cv2.COLOR_BGR2RGB)))
         score = int(metrics["frame_anomaly"])
         frame_scores.append(score)
         for key in metric_max:
@@ -394,7 +433,27 @@ def analyze_video(path: Path, report_id: str, media_type: str) -> tuple[dict, li
         temporal_score = int(np.clip(frozen_or_looped * 0.55 + jumpiness * 0.45, 0, 100))
     max_frame_score = max(frame_scores, default=0)
     average_top_score = int(np.mean(sorted(frame_scores, reverse=True)[:4])) if frame_scores else 0
-    video_score = int(np.clip(max(max_frame_score * 0.72 + temporal_score * 0.28, average_top_score * 0.82), 0, 100))
+    classical_video_score = int(np.clip(max(max_frame_score * 0.72 + temporal_score * 0.28, average_top_score * 0.82), 0, 100))
+    content_model = infer_video_ai_probability(frame_scores, temporal_score, metric_max)
+    pretrained_model = infer_pretrained_images(model_frames)
+    video_score = pretrained_model.probability if pretrained_model.available else content_model.probability
+    evidence.append(EvidenceItem(
+        label="Pretrained AI Video-Frame Detector",
+        detail=(
+            f"{pretrained_model.model_name} frame inference: {pretrained_model.probability}% AI, top label {pretrained_model.label}."
+            if pretrained_model.available
+            else f"{pretrained_model.model_name} unavailable; video forensic content model used. {pretrained_model.error}"
+        ),
+        severity=risk_level(video_score),
+    ))
+    evidence.append(EvidenceItem(
+        label="Video Forensic Content Model",
+        detail=f"{content_model.label} probability: {content_model.probability}%.",
+        severity=risk_level(content_model.probability),
+    ))
+    if pretrained_model.available:
+        findings.append(f"Pretrained video-frame detector probability: {pretrained_model.probability}% ({pretrained_model.label})")
+    findings.extend(content_model.evidence)
 
     checks = [
         ("Face-region inconsistency detected", metric_max["face_region_anomaly"], 45),
@@ -417,9 +476,16 @@ def analyze_video(path: Path, report_id: str, media_type: str) -> tuple[dict, li
         "average_top_frame_anomaly": average_top_score,
         "temporal_inconsistency": temporal_score,
         "video_forensic_score": video_score,
-        "summary": "OpenCV sampled multiple frames and measured visual artifacts, face-region consistency, compression seams, residual noise, and temporal consistency.",
+        "classical_video_forensic_score": classical_video_score,
+        "ai_model": content_model.label,
+        "ai_model_probability": video_score,
+        "pretrained_model": pretrained_model.model_name,
+        "pretrained_model_available": pretrained_model.available,
+        "pretrained_model_probability": pretrained_model.probability,
+        "forensic_model_probability": content_model.probability,
+        "summary": "Video content model evaluated extracted frame anomaly clusters, face-region consistency, compression seams, residual noise, and temporal consistency.",
     }
-    return summary, suspicious[:4], video_score, evidence, findings
+    return summary, suspicious[:4], video_score, evidence, _dedupe(findings)
 
 
 def analyze_faces(path: Path, report_id: str, media_type: str) -> tuple[dict, list[SuspiciousFrame]]:
@@ -435,8 +501,13 @@ def analyze_lip_sync(path: Path, media_type: str) -> dict:
 
 def _write_audio_spectrogram(path: Path, report_id: str, y: np.ndarray, sr: int) -> SuspiciousFrame:
     settings = get_settings()
-    spectrogram = np.abs(librosa.stft(y, n_fft=1024, hop_length=256))
-    db = librosa.amplitude_to_db(spectrogram, ref=np.max)
+    n_fft = 1024
+    hop = 256
+    if y.size < n_fft:
+        y = np.pad(y, (0, n_fft - y.size))
+    frames = np.lib.stride_tricks.sliding_window_view(y, n_fft)[::hop][:1200]
+    spectrogram = np.abs(np.fft.rfft(frames * np.hanning(n_fft), axis=1)).T
+    db = 20 * np.log10(spectrogram / max(float(np.max(spectrogram)), 1e-8) + 1e-8)
     normalized = cv2.normalize(db, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
     color = cv2.applyColorMap(normalized, cv2.COLORMAP_TURBO)
     color = cv2.flip(color, 0)
@@ -451,23 +522,43 @@ def analyze_audio_clone(path: Path, media_type: str, report_id: str | None = Non
     if media_type != "audio":
         return {"synthetic_voice_confidence": 0, "summary": "Audio stream unavailable for this media type."}, []
     try:
-        y, sr = librosa.load(str(path), sr=16000, mono=True, duration=45)
+        y, sr = sf.read(str(path), dtype="float32", always_2d=False, frames=45 * 48000)
+        if y.ndim > 1:
+            y = np.mean(y, axis=1)
+        if sr != 16000 and y.size:
+            target_length = max(1, int(len(y) * 16000 / sr))
+            y = np.interp(np.linspace(0, len(y) - 1, target_length), np.arange(len(y)), y).astype(np.float32)
+            sr = 16000
+        if y.size > sr * 45:
+            y = y[: sr * 45]
         if len(y) == 0:
             raise ValueError("empty audio")
-        flatness = float(np.mean(librosa.feature.spectral_flatness(y=y)))
-        zcr = float(np.mean(librosa.feature.zero_crossing_rate(y)))
-        mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13)
-        mfcc_variance = float(np.mean(np.var(mfcc, axis=1)))
-        rms = float(np.mean(librosa.feature.rms(y=y)))
-        confidence = int(np.clip(flatness * 180 + zcr * 220 + _score_from_range(mfcc_variance, 20, 180) * 0.45 + _score_from_range(rms, 0.01, 0.22) * 0.18, 0, 100))
+        content_model = infer_audio_ai_probability(y, sr)
+        pretrained_model = infer_pretrained_audio(y, sr)
+        confidence = pretrained_model.probability if pretrained_model.available else content_model.probability
         frames = [_write_audio_spectrogram(path, report_id, y, sr)] if report_id else []
+        features = content_model.features
         return {
             "synthetic_voice_confidence": confidence,
-            "spectral_flatness": round(flatness, 4),
-            "zero_crossing_rate": round(zcr, 4),
-            "mfcc_variance": round(mfcc_variance, 3),
-            "rms_energy": round(rms, 4),
-            "summary": "Librosa decoded the audio and measured spectral flatness, zero-crossing rate, MFCC variance, and RMS energy.",
+            "ai_model": pretrained_model.model_name if pretrained_model.available else content_model.label,
+            "ai_model_probability": confidence,
+            "pretrained_model": pretrained_model.model_name,
+            "pretrained_model_available": pretrained_model.available,
+            "pretrained_model_probability": pretrained_model.probability,
+            "pretrained_model_label": pretrained_model.label,
+            "pretrained_model_error": pretrained_model.error or "",
+            "forensic_model_probability": content_model.probability,
+            "model_evidence": (
+                [f"Pretrained voice detector probability: {pretrained_model.probability}% ({pretrained_model.label})"]
+                if pretrained_model.available
+                else [f"Pretrained voice detector unavailable: {pretrained_model.error}"]
+            ) + content_model.evidence,
+            "spectral_flatness": round(float(features.get("spectral_flatness", 0)), 4),
+            "zero_crossing_rate": round(float(features.get("zero_crossing_rate", 0)), 4),
+            "mfcc_variance": round(float(features.get("mfcc_variance", 0)), 3),
+            "rms_energy": round(float(features.get("rms_mean", 0)), 4),
+            **{f"model_{key}": round(value, 4) if isinstance(value, float) else value for key, value in content_model.features.items()},
+            "summary": "Audio content model evaluated spectrogram, MFCC variance, spectral flatness, frequency distribution, RMS dynamics, and pitch contour.",
         }, frames
     except Exception as exc:
         return {"synthetic_voice_confidence": 0, "summary": f"Audio could not be decoded; no synthetic voice finding was generated. {exc}"}, []
@@ -602,6 +693,14 @@ def analyze_upload(file_name: str, content_type: str | None, source: BinaryIO) -
     else:
         if media_type == "video":
             face_analysis, suspicious_frames, visual_score, video_evidence, video_findings = analyze_video(destination, report_id, media_type)
+        elif media_type == "audio":
+            face_analysis, suspicious_frames, visual_score, video_evidence, video_findings = (
+                {"frames_analyzed": 0, "suspicious_frames": 0, "summary": "Video frame analysis not applicable."},
+                [],
+                0,
+                [],
+                [],
+            )
         else:
             face_analysis, suspicious_frames, visual_score, video_evidence, video_findings = (
                 {"frames_analyzed": 0, "suspicious_frames": 0, "summary": "Video frame analysis not applicable."},
@@ -613,19 +712,30 @@ def analyze_upload(file_name: str, content_type: str | None, source: BinaryIO) -
         lip_sync = analyze_lip_sync(destination, media_type)
         audio_clone, audio_frames = analyze_audio_clone(destination, media_type, report_id)
         suspicious_frames = suspicious_frames + audio_frames
+        audio_evidence = []
+        audio_findings = []
+        if media_type == "audio" and audio_clone.get("synthetic_voice_confidence", 0) >= 0:
+            audio_score = int(audio_clone["synthetic_voice_confidence"])
+            audio_evidence.append(EvidenceItem(
+                label="Audio AI Content Model",
+                detail=f"{audio_clone.get('ai_model', 'audio_content_model')} probability: {audio_score}%.",
+                severity=risk_level(audio_score),
+            ))
+            audio_findings.extend(str(item) for item in audio_clone.get("model_evidence", []))
         scores, evidence = calculate_scores(
             tampering_count=len([i for i in metadata.tampering_indicators if not i.startswith("No ")]),
             suspicious_frame_score=visual_score,
             lip_sync_score=lip_sync["forensic_score"],
             audio_clone_confidence=audio_clone["synthetic_voice_confidence"],
         )
-        evidence = video_evidence + [item for item in evidence if item.detail not in {existing.detail for existing in video_evidence}]
+        primary_evidence = video_evidence + audio_evidence
+        evidence = primary_evidence + [item for item in evidence if item.detail not in {existing.detail for existing in primary_evidence}]
         if not evidence and any(not item.startswith("No ") for item in metadata.tampering_indicators):
             evidence.append(EvidenceItem(label="Metadata Indicator", detail=", ".join(metadata.tampering_indicators), severity=scores.risk_level))
         verdict = "Likely Synthetic or Manipulated" if scores.threat_score >= 65 else "Review Recommended" if scores.threat_score >= 35 else "No Strong Synthetic Indicators Detected"
         key_findings = []
         seen_findings: set[str] = set()
-        for finding in video_findings + [item.detail for item in evidence]:
+        for finding in video_findings + audio_findings + [item.detail for item in evidence]:
             signature = finding.split(" with measured", 1)[0].split(":", 1)[0].strip().lower()
             if signature and signature not in seen_findings:
                 seen_findings.add(signature)

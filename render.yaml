@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: truthlens-api
+    runtime: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: TRUTHLENS_STORAGE_DIR
+        value: /tmp/truthlens-storage
+      - key: TRUTHLENS_DATABASE_URL
+        value: sqlite:////tmp/truthlens.db
+      - key: ALLOWED_ORIGINS
+        value: https://frontend-ruddy-chi-23.vercel.app

@@ -21,12 +21,12 @@ const features = [
   {
     icon: Activity,
     title: "Lip Sync Analysis",
-    body: "Simulates forensic mouth-motion alignment scores for a compelling prototype workflow.",
+    body: "Reports mouth-motion risk only when supported analysis is available and avoids unsupported synthetic claims.",
   },
   {
     icon: AudioWaveform,
     title: "Audio Clone Detection",
-    body: "Uses Librosa acoustic features to estimate synthetic voice confidence.",
+    body: "Uses spectrogram, cepstral, frequency, dynamics, and pitch-pattern features to estimate synthetic voice confidence.",
   },
 ];
 

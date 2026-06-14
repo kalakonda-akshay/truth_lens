@@ -1,12 +1,12 @@
 # TruthLens
 
-TruthLens is an AI-powered Deepfake and Cybersecurity Verification Platform built for Cyberathon 2026. It focuses on professional UX, explainable forensic reports, and evidence-driven analysis without custom model training.
+TruthLens is an AI-powered Deepfake and Cybersecurity Verification Platform built for Cyberathon 2026. It focuses on professional UX, explainable forensic reports, and content-derived media analysis.
 
 ## Stack
 
 - Frontend: Next.js 15, React, TypeScript, Tailwind CSS
 - Backend: FastAPI, SQLite
-- Media analysis: OpenCV, Pillow/EXIF, Librosa, browser-safe canvas forensics
+- Media analysis: OpenCV, Pillow/EXIF, SoundFile, NumPy FFT and cepstral forensics
 - Deployment: Vercel for frontend, Render/Railway for backend
 
 ## Features
@@ -23,7 +23,7 @@ TruthLens is an AI-powered Deepfake and Cybersecurity Verification Platform buil
 - Audio waveform/spectrogram evidence visualization in browser-safe mode
 - OpenCV frame extraction with suspicious-frame simulation
 - Lip-sync forensic scoring
-- Librosa-based audio clone confidence scoring
+- Spectrogram, cepstral variance, frequency, dynamics, and pitch-pattern voice-clone scoring
 - Authenticity score, deepfake probability, and risk level
 - Evidence-first results page with verdict reasons and recommendations
 - Cyberathon Judge Mode explaining the evidence-first workflow for real submitted evidence
@@ -76,11 +76,13 @@ Set `ALLOWED_ORIGINS` to the deployed Vercel URL.
 
 ## Frontend Deployment
 
-Deploy `frontend/` to Vercel. It runs in standalone browser-safe prototype mode when no backend is configured. For OpenCV, EXIF, and Librosa backend analysis, set:
+Deploy `frontend/` to Vercel. Image, video, and audio analysis requires the FastAPI backend; the frontend no longer generates fallback media scores. Set:
 
 ```bash
 NEXT_PUBLIC_API_URL=https://your-backend-url
 ```
+
+The backend includes `render.yaml` and `backend/railway.json`. The first image/audio request downloads the configured public Hugging Face detector weights into `TRUTHLENS_STORAGE_DIR/models`; use persistent storage in production when available.
 
 ## Prototype Note
 
