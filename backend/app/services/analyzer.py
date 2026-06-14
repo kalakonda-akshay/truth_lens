@@ -246,37 +246,185 @@ def analyze_image(path: Path, report_id: str, metadata: MetadataReport) -> tuple
     return metrics, suspicious, ai_probability, evidence, findings
 
 
-def analyze_faces(path: Path, report_id: str, media_type: str) -> tuple[dict, list[SuspiciousFrame]]:
+def _compression_seam_score(gray: np.ndarray) -> int:
+    block = 8
+    h, w = gray.shape
+    if h <= block or w <= block:
+        return 0
+    vertical = float(np.mean(np.abs(gray[:, block:w:block].astype(np.float32) - gray[:, block - 1 : w - 1 : block].astype(np.float32))))
+    horizontal = float(np.mean(np.abs(gray[block:h:block, :].astype(np.float32) - gray[block - 1 : h - 1 : block, :].astype(np.float32))))
+    return int(np.clip((vertical + horizontal) * 2.3, 0, 100))
+
+
+def _video_frame_metrics(frame: np.ndarray) -> tuple[dict[str, int | float], np.ndarray]:
+    height, width = frame.shape[:2]
+    scale = min(1.0, 720 / max(width, height))
+    if scale < 1:
+        frame = cv2.resize(frame, (int(width * scale), int(height * scale)))
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    laplacian = cv2.Laplacian(gray, cv2.CV_64F)
+    edges = cv2.Canny(gray, 80, 180)
+    texture_variance = float(np.var(laplacian))
+    edge_density = float(np.count_nonzero(edges)) / edges.size
+    brightness = float(np.mean(gray))
+    contrast = float(np.std(gray))
+    residual = gray.astype(np.float32) - cv2.GaussianBlur(gray, (0, 0), 1.2).astype(np.float32)
+    noise_std = float(np.std(residual))
+
+    face_score = 0
+    face_regions = 0
+    face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+    for (x, y, fw, fh) in face_cascade.detectMultiScale(gray, scaleFactor=1.12, minNeighbors=5):
+        roi = gray[y : y + fh, x : x + fw]
+        if roi.size:
+            face_regions += 1
+            roi_edges = float(np.count_nonzero(cv2.Canny(roi, 60, 160))) / roi.size
+            roi_texture = float(np.var(cv2.Laplacian(roi, cv2.CV_64F)))
+            face_score = max(face_score, int(np.clip(_score_from_range(roi_texture, 90, 3600) * 0.6 + _score_from_range(roi_edges, 0.03, 0.24) * 0.4, 0, 100)))
+
+    metrics = {
+        "texture_anomaly": _score_from_range(texture_variance, 100, 4400),
+        "edge_anomaly": _score_from_range(edge_density, 0.02, 0.24),
+        "brightness_anomaly": _score_from_range(brightness, 32, 224),
+        "contrast_anomaly": _score_from_range(contrast, 16, 98),
+        "compression_artifacts": _compression_seam_score(gray),
+        "noise_pattern_anomaly": _score_from_range(noise_std, 2.0, 32),
+        "face_region_anomaly": face_score,
+        "face_regions": face_regions,
+        "brightness": round(brightness, 2),
+        "edge_density": round(edge_density, 4),
+    }
+    metric_peak = max(
+        int(metrics["texture_anomaly"]),
+        int(metrics["edge_anomaly"]),
+        int(metrics["compression_artifacts"]),
+        int(metrics["noise_pattern_anomaly"]),
+        int(metrics["face_region_anomaly"]),
+    )
+    frame_score = int(np.clip(max(
+        metrics["texture_anomaly"] * 0.20
+        + metrics["edge_anomaly"] * 0.18
+        + metrics["compression_artifacts"] * 0.18
+        + metrics["noise_pattern_anomaly"] * 0.16
+        + metrics["face_region_anomaly"] * 0.18
+        + max(metrics["brightness_anomaly"], metrics["contrast_anomaly"]) * 0.10,
+        metric_peak * 0.82,
+    ),
+        0,
+        100,
+    ))
+    metrics["frame_anomaly"] = frame_score
+    return metrics, frame
+
+
+def analyze_video(path: Path, report_id: str, media_type: str) -> tuple[dict, list[SuspiciousFrame], int, list[EvidenceItem], list[str]]:
     if media_type != "video":
-        return {"frames_analyzed": 0, "suspicious_frames": 0, "summary": "Video frame analysis not applicable."}, []
+        return {"frames_analyzed": 0, "suspicious_frames": 0, "summary": "Video frame analysis not applicable."}, [], 0, [], []
     settings = get_settings()
     capture = cv2.VideoCapture(str(path))
     fps = capture.get(cv2.CAP_PROP_FPS) or 24
     frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-    interval = max(1, frame_count // 12) if frame_count else 24
+    if not capture.isOpened():
+        return {"frames_analyzed": 0, "suspicious_frames": 0, "summary": "Video container could not be decoded by OpenCV."}, [], 45, [
+            EvidenceItem(label="Video Decode Failure", detail="OpenCV could not decode frames from this video container.", severity="Medium")
+        ], ["Video decode failed"]
+
+    sample_count = 16
+    if frame_count > 0:
+        targets = np.linspace(0, max(0, frame_count - 1), min(sample_count, frame_count), dtype=int).tolist()
+    else:
+        targets = list(range(0, sample_count * int(fps), int(max(1, fps))))
     suspicious: list[SuspiciousFrame] = []
+    evidence: list[EvidenceItem] = []
+    findings: list[str] = []
+    frame_scores: list[int] = []
+    temporal_diffs: list[float] = []
+    metric_max = {
+        "texture_anomaly": 0,
+        "edge_anomaly": 0,
+        "compression_artifacts": 0,
+        "noise_pattern_anomaly": 0,
+        "face_region_anomaly": 0,
+    }
+    previous_gray: np.ndarray | None = None
     analyzed = 0
-    for index in range(0, max(frame_count, 1), interval):
-        if analyzed >= 12:
-            break
+    for index in targets:
         capture.set(cv2.CAP_PROP_POS_FRAMES, index)
         ok, frame = capture.read()
         if not ok:
-            break
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        blur = cv2.Laplacian(gray, cv2.CV_64F).var()
-        brightness = float(np.mean(gray))
-        edge_density = float(np.count_nonzero(cv2.Canny(gray, 80, 180))) / gray.size
-        score = int(np.clip(_score_from_range(blur, 80, 4200) * 0.4 + _score_from_range(brightness, 35, 220) * 0.25 + _score_from_range(edge_density, 0.025, 0.22) * 0.35, 0, 100))
+            continue
+        metrics, normalized_frame = _video_frame_metrics(frame)
+        score = int(metrics["frame_anomaly"])
+        frame_scores.append(score)
+        for key in metric_max:
+            metric_max[key] = max(metric_max[key], int(metrics[key]))
+
+        gray_small = cv2.resize(cv2.cvtColor(normalized_frame, cv2.COLOR_BGR2GRAY), (160, 90))
+        if previous_gray is not None:
+            temporal_diffs.append(float(np.mean(cv2.absdiff(gray_small, previous_gray))))
+        previous_gray = gray_small
+
         if score >= 45:
             frame_name = f"{report_id}-frame-{analyzed}.jpg"
-            annotated = frame.copy()
+            annotated = normalized_frame.copy()
+            heat = cv2.normalize(np.abs(cv2.Laplacian(cv2.cvtColor(annotated, cv2.COLOR_BGR2GRAY), cv2.CV_64F)).astype(np.float32), None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+            annotated = cv2.addWeighted(annotated, 0.7, cv2.applyColorMap(heat, cv2.COLORMAP_TURBO), 0.3, 0)
             cv2.rectangle(annotated, (20, 20), (annotated.shape[1] - 20, annotated.shape[0] - 20), (0, 255, 255), 4)
             cv2.imwrite(str(settings.storage_dir / "frames" / frame_name), annotated)
-            suspicious.append(SuspiciousFrame(timestamp_seconds=round(index / fps, 2), frame_url=f"/frames/{frame_name}", reason="Frame anomaly score exceeded threshold from blur, brightness, and edge-density metrics.", score=score))
+            reasons = []
+            if int(metrics["face_region_anomaly"]) >= 45:
+                reasons.append("face-region inconsistency")
+            if int(metrics["edge_anomaly"]) >= 45:
+                reasons.append("edge anomaly")
+            if int(metrics["compression_artifacts"]) >= 45:
+                reasons.append("compression artifact inconsistency")
+            if int(metrics["noise_pattern_anomaly"]) >= 45:
+                reasons.append("noise residual anomaly")
+            reason = ", ".join(reasons) or "combined frame artifact score"
+            suspicious.append(SuspiciousFrame(timestamp_seconds=round(index / fps, 2), frame_url=f"/frames/{frame_name}", reason=f"Frame retained from measured {reason}.", score=score))
         analyzed += 1
     capture.release()
-    return {"frames_analyzed": analyzed, "suspicious_frames": len(suspicious), "summary": "OpenCV sampled frames and retained only frames with measured anomaly scores above threshold."}, suspicious[:4]
+
+    temporal_score = 0
+    if temporal_diffs:
+        mean_diff = float(np.mean(temporal_diffs))
+        diff_std = float(np.std(temporal_diffs))
+        frozen_or_looped = _score_from_range(mean_diff, 2.5, 42)
+        jumpiness = _score_from_range(diff_std, 0.8, 24)
+        temporal_score = int(np.clip(frozen_or_looped * 0.55 + jumpiness * 0.45, 0, 100))
+    max_frame_score = max(frame_scores, default=0)
+    average_top_score = int(np.mean(sorted(frame_scores, reverse=True)[:4])) if frame_scores else 0
+    video_score = int(np.clip(max(max_frame_score * 0.72 + temporal_score * 0.28, average_top_score * 0.82), 0, 100))
+
+    checks = [
+        ("Face-region inconsistency detected", metric_max["face_region_anomaly"], 45),
+        ("Edge anomaly detected across sampled video frames", metric_max["edge_anomaly"], 45),
+        ("Compression artifact inconsistency detected", metric_max["compression_artifacts"], 55),
+        ("Noise residual anomaly detected", metric_max["noise_pattern_anomaly"], 45),
+        ("Texture inconsistency detected across frames", metric_max["texture_anomaly"], 45),
+        ("Temporal inconsistency detected", temporal_score, 45),
+    ]
+    for label, score, threshold in checks:
+        if score >= threshold:
+            severity = risk_level(int(score))
+            evidence.append(EvidenceItem(label=label, detail=f"{label} with measured score {int(score)}%.", severity=severity))
+            findings.append(label)
+
+    summary = {
+        "frames_analyzed": analyzed,
+        "suspicious_frames": len(suspicious),
+        "max_frame_anomaly": max_frame_score,
+        "average_top_frame_anomaly": average_top_score,
+        "temporal_inconsistency": temporal_score,
+        "video_forensic_score": video_score,
+        "summary": "OpenCV sampled multiple frames and measured visual artifacts, face-region consistency, compression seams, residual noise, and temporal consistency.",
+    }
+    return summary, suspicious[:4], video_score, evidence, findings
+
+
+def analyze_faces(path: Path, report_id: str, media_type: str) -> tuple[dict, list[SuspiciousFrame]]:
+    analysis, frames, _score, _evidence, _findings = analyze_video(path, report_id, media_type)
+    return analysis, frames
 
 
 def analyze_lip_sync(path: Path, media_type: str) -> dict:
@@ -298,7 +446,9 @@ def _write_audio_spectrogram(path: Path, report_id: str, y: np.ndarray, sr: int)
 
 
 def analyze_audio_clone(path: Path, media_type: str, report_id: str | None = None) -> tuple[dict, list[SuspiciousFrame]]:
-    if media_type not in {"audio", "video"}:
+    if media_type == "video":
+        return {"synthetic_voice_confidence": 0, "summary": "Audio clone analysis is skipped for video containers; video verdict is based on decoded frame and temporal forensics."}, []
+    if media_type != "audio":
         return {"synthetic_voice_confidence": 0, "summary": "Audio stream unavailable for this media type."}, []
     try:
         y, sr = librosa.load(str(path), sr=16000, mono=True, duration=45)
@@ -450,20 +600,36 @@ def analyze_upload(file_name: str, content_type: str | None, source: BinaryIO) -
         verdict = "Likely AI Generated or Manipulated" if probability >= 65 else "Review Recommended" if probability >= 35 else "No Strong Image Manipulation Detected"
         key_findings = findings
     else:
-        face_analysis, suspicious_frames = analyze_faces(destination, report_id, media_type)
+        if media_type == "video":
+            face_analysis, suspicious_frames, visual_score, video_evidence, video_findings = analyze_video(destination, report_id, media_type)
+        else:
+            face_analysis, suspicious_frames, visual_score, video_evidence, video_findings = (
+                {"frames_analyzed": 0, "suspicious_frames": 0, "summary": "Video frame analysis not applicable."},
+                [],
+                0,
+                [],
+                [],
+            )
         lip_sync = analyze_lip_sync(destination, media_type)
         audio_clone, audio_frames = analyze_audio_clone(destination, media_type, report_id)
         suspicious_frames = suspicious_frames + audio_frames
         scores, evidence = calculate_scores(
             tampering_count=len([i for i in metadata.tampering_indicators if not i.startswith("No ")]),
-            suspicious_frame_score=max([frame.score for frame in suspicious_frames], default=0),
+            suspicious_frame_score=visual_score,
             lip_sync_score=lip_sync["forensic_score"],
             audio_clone_confidence=audio_clone["synthetic_voice_confidence"],
         )
+        evidence = video_evidence + [item for item in evidence if item.detail not in {existing.detail for existing in video_evidence}]
         if not evidence and any(not item.startswith("No ") for item in metadata.tampering_indicators):
             evidence.append(EvidenceItem(label="Metadata Indicator", detail=", ".join(metadata.tampering_indicators), severity=scores.risk_level))
         verdict = "Likely Synthetic or Manipulated" if scores.threat_score >= 65 else "Review Recommended" if scores.threat_score >= 35 else "No Strong Synthetic Indicators Detected"
-        key_findings = [item.detail for item in evidence]
+        key_findings = []
+        seen_findings: set[str] = set()
+        for finding in video_findings + [item.detail for item in evidence]:
+            signature = finding.split(" with measured", 1)[0].split(":", 1)[0].strip().lower()
+            if signature and signature not in seen_findings:
+                seen_findings.add(signature)
+                key_findings.append(finding)
 
     if not key_findings:
         key_findings = ["No high-risk forensic indicators were detected by the available analysis modules."]

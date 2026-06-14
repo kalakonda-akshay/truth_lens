@@ -17,19 +17,20 @@ def calculate_scores(
     lip_sync_score: int,
     audio_clone_confidence: int,
 ) -> tuple[ScoreCard, list[EvidenceItem]]:
-    active_signals = [
-        min(35, tampering_count * 12),
-        suspicious_frame_score,
-        lip_sync_score,
-        audio_clone_confidence,
-    ]
+    metadata_score = min(35, tampering_count * 12)
+    visual_score = max(0, min(100, suspicious_frame_score))
+    lip_score = max(0, min(100, lip_sync_score))
+    audio_score = max(0, min(100, audio_clone_confidence))
+    active_signals = [metadata_score, visual_score, lip_score, audio_score]
+
     weighted_risk = round(
-        active_signals[0] * 0.22
-        + active_signals[1] * 0.34
-        + active_signals[2] * 0.18
-        + active_signals[3] * 0.26
+        metadata_score * 0.12
+        + visual_score * 0.56
+        + lip_score * 0.12
+        + audio_score * 0.20
     )
-    probability = max(0, min(100, weighted_risk))
+    strongest_signal_floor = max(active_signals)
+    probability = max(0, min(100, max(weighted_risk, strongest_signal_floor)))
     level = risk_level(probability)
     evidence: list[EvidenceItem] = []
     if tampering_count:

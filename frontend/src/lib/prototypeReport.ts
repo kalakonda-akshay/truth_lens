@@ -217,6 +217,9 @@ async function captureVideoFrames(file: File): Promise<{ frames: AnalysisReport[
   return new Promise((resolve) => {
     let current = 0;
     let maxScore = 0;
+    let previousGray: Float32Array | null = null;
+    const temporalDiffs: number[] = [];
+    const frameScores: number[] = [];
     const finish = () => {
       URL.revokeObjectURL(url);
       resolve({ frames, score: maxScore, findings, evidence });
@@ -226,7 +229,7 @@ async function captureVideoFrames(file: File): Promise<{ frames: AnalysisReport[
     video.onerror = finish;
     video.onloadedmetadata = () => {
       const duration = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : 1;
-      const targets = [0.2, 0.45, 0.7].map((ratio) => duration * ratio);
+      const targets = [0.08, 0.22, 0.36, 0.5, 0.64, 0.78, 0.92].map((ratio) => Math.min(duration - 0.01, Math.max(0, duration * ratio)));
       video.onseeked = () => {
         const width = Math.min(video.videoWidth || 640, 800);
         const height = Math.min(video.videoHeight || 360, 450);
@@ -238,31 +241,73 @@ async function captureVideoFrames(file: File): Promise<{ frames: AnalysisReport[
           const pixels = context.getImageData(0, 0, width, height).data;
           let brightness = 0;
           let edge = 0;
+          let contrast = 0;
+          let seamEnergy = 0;
+          const gray = new Float32Array(width * height);
           let samples = 0;
-          for (let y = 2; y < height - 2; y += 6) {
-            for (let x = 2; x < width - 2; x += 6) {
+          for (let y = 0; y < height; y += 1) {
+            for (let x = 0; x < width; x += 1) {
               const i = (y * width + x) * 4;
-              const j = (y * width + x + 2) * 4;
-              const currentBrightness = (pixels[i] + pixels[i + 1] + pixels[i + 2]) / 3;
+              gray[y * width + x] = pixels[i] * 0.299 + pixels[i + 1] * 0.587 + pixels[i + 2] * 0.114;
+            }
+          }
+          for (let y = 2; y < height - 2; y += 5) {
+            for (let x = 2; x < width - 2; x += 5) {
+              const currentBrightness = gray[y * width + x];
               brightness += currentBrightness;
-              edge += Math.abs(currentBrightness - (pixels[j] + pixels[j + 1] + pixels[j + 2]) / 3);
+              edge += Math.abs(currentBrightness - gray[y * width + x + 2]) + Math.abs(currentBrightness - gray[(y + 2) * width + x]);
+              if (x % 8 === 0) seamEnergy += Math.abs(currentBrightness - gray[y * width + x - 1]);
+              if (y % 8 === 0) seamEnergy += Math.abs(currentBrightness - gray[(y - 1) * width + x]);
               samples += 1;
             }
           }
-          const score = clamp(scoreOutsideRange(brightness / Math.max(1, samples), 35, 220) * 0.35 + scoreOutsideRange(edge / Math.max(1, samples), 5, 55) * 0.65, 0, 100);
-          maxScore = Math.max(maxScore, score);
+          const meanBrightness = brightness / Math.max(1, samples);
+          for (let i = 0; i < gray.length; i += 8) contrast += Math.abs(gray[i] - meanBrightness);
+          const edgeMean = edge / Math.max(1, samples);
+          const seamMean = seamEnergy / Math.max(1, samples);
+          const contrastMean = contrast / Math.max(1, Math.floor(gray.length / 8));
+          if (previousGray) {
+            const stride = Math.max(1, Math.floor(gray.length / 12000));
+            let diff = 0;
+            let diffSamples = 0;
+            for (let i = 0; i < gray.length; i += stride) {
+              diff += Math.abs(gray[i] - previousGray[i]);
+              diffSamples += 1;
+            }
+            temporalDiffs.push(diff / Math.max(1, diffSamples));
+          }
+          previousGray = gray;
+          const score = clamp(
+            scoreOutsideRange(meanBrightness, 35, 220) * 0.12
+            + scoreOutsideRange(edgeMean, 8, 70) * 0.30
+            + scoreOutsideRange(contrastMean, 14, 86) * 0.18
+            + scoreOutsideRange(seamMean, 0.2, 7.5) * 0.24
+            + scoreOutsideRange(edgeMean / Math.max(1, contrastMean), 0.25, 2.2) * 0.16,
+            0,
+            100,
+          );
+          frameScores.push(score);
           if (score >= 45) {
             context.strokeStyle = "#22d3ee";
             context.lineWidth = 5;
             context.strokeRect(20, 20, width - 40, height - 40);
-            frames.push({ timestamp_seconds: Number(video.currentTime.toFixed(2)), frame_url: canvas.toDataURL("image/jpeg", 0.82), reason: "Frame retained because measured brightness/edge anomaly exceeded threshold.", score });
+            frames.push({ timestamp_seconds: Number(video.currentTime.toFixed(2)), frame_url: canvas.toDataURL("image/jpeg", 0.82), reason: "Frame retained because measured visual artifact score exceeded threshold.", score });
           }
         }
         current += 1;
         if (current >= targets.length) {
+          const temporalScore = temporalDiffs.length
+            ? clamp(scoreOutsideRange(temporalDiffs.reduce((sum, value) => sum + value, 0) / temporalDiffs.length, 2, 42) * 0.55 + scoreOutsideRange(Math.max(...temporalDiffs) - Math.min(...temporalDiffs), 0.8, 24) * 0.45, 0, 100)
+            : 0;
+          const topAverage = frameScores.length ? frameScores.sort((a, b) => b - a).slice(0, 3).reduce((sum, value) => sum + value, 0) / Math.min(3, frameScores.length) : 0;
+          maxScore = clamp(Math.max(topAverage * 0.82, Math.max(0, ...frameScores) * 0.72 + temporalScore * 0.28), 0, 100);
           if (maxScore >= 45) {
             findings.push("Video frame anomaly detected");
-            evidence.push({ label: "Video Frame Anomaly", detail: `Highest measured frame anomaly score: ${maxScore}%.`, severity: riskLevel(maxScore) });
+            evidence.push({ label: "Video Frame Anomaly", detail: `Measured video forensic score: ${maxScore}%.`, severity: riskLevel(maxScore) });
+          }
+          if (temporalScore >= 45) {
+            findings.push("Temporal inconsistency detected");
+            evidence.push({ label: "Temporal Inconsistency", detail: `Measured temporal inconsistency score: ${temporalScore}%.`, severity: riskLevel(temporalScore) });
           }
           finish();
         } else {
@@ -331,7 +376,7 @@ export async function generatePrototypeReport(file: File): Promise<AnalysisRepor
   if (type === "video") {
     const result = await captureVideoFrames(file);
     return baseReport(file, "video", result.score, result.findings, result.evidence, result.frames, {
-      face_analysis: { frames_analyzed: 3, suspicious_frames: result.frames.length, summary: "Browser sampled video frames and retained only threshold-exceeding frames." },
+      face_analysis: { frames_analyzed: 7, suspicious_frames: result.frames.length, summary: "Browser sampled video frames and measured frame artifacts plus temporal consistency." },
       lip_sync_analysis: { forensic_score: 0, summary: "No lip-sync mismatch is claimed without a speech-to-mouth model." },
     });
   }
