@@ -279,7 +279,7 @@ def analyze_image(path: Path, report_id: str, metadata: MetadataReport) -> tuple
         findings.append("Editing software trace present")
 
     suspicious: list[SuspiciousFrame] = []
-    if evidence and visual_score >= 35:
+    if evidence and max(visual_score, ai_probability) >= 35:
         anomaly = cv2.normalize(np.abs(laplacian).astype(np.float32), None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
         _, mask = cv2.threshold(anomaly, int(np.percentile(anomaly, 92)), 255, cv2.THRESH_BINARY)
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
