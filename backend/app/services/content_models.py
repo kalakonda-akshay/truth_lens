@@ -64,38 +64,68 @@ def infer_image_ai_probability(image: np.ndarray, has_camera_exif: bool) -> Mode
     scale = min(1.0, 960 / max(width, height))
     if scale < 1:
         image = cv2.resize(image, (int(width * scale), int(height * scale)))
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    saturation = hsv[:, :, 1].astype(np.float32)
+    channels = cv2.split(image.astype(np.float32))
+    channel_corr = float(np.mean([
+        abs(np.corrcoef(channels[0].ravel(), channels[1].ravel())[0, 1]),
+        abs(np.corrcoef(channels[1].ravel(), channels[2].ravel())[0, 1]),
+        abs(np.corrcoef(channels[0].ravel(), channels[2].ravel())[0, 1]),
+    ]))
+    if not np.isfinite(channel_corr):
+        channel_corr = 0.0
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     features = _gray_features(gray)
     texture_anomaly = _range_anomaly(features["texture_variance"], 140, 5200)
+    low_texture_score = np.clip((720 - features["texture_variance"]) * 0.13, 0, 100)
     edge_anomaly = _range_anomaly(features["edge_density"], 0.025, 0.24)
     noise_anomaly = _range_anomaly(features["noise_residual_std"], 3.2, 30)
+    low_sensor_noise_score = np.clip((7.2 - features["noise_residual_std"]) * 15, 0, 100)
     frequency_anomaly = _range_anomaly(features["high_frequency_ratio"], 0.55, 1.42)
     seam_score = np.clip(features["compression_seams"] * 2.8, 0, 100)
-    metadata_signal = 0 if has_camera_exif else 10
+    color_correlation_score = np.clip((channel_corr - 0.88) * 420, 0, 100)
+    saturation_uniformity_score = np.clip((28 - float(np.std(saturation))) * 2.8, 0, 100)
+    metadata_signal = 0 if has_camera_exif else 15
     logit = (
-        -2.8
+        -3.40
         + metadata_signal * 0.028
-        + texture_anomaly * 0.020
+        + texture_anomaly * 0.016
+        + low_texture_score * 0.022
         + edge_anomaly * 0.018
-        + noise_anomaly * 0.026
+        + noise_anomaly * 0.016
+        + low_sensor_noise_score * 0.020
         + frequency_anomaly * 0.030
-        + seam_score * 0.035
+        + seam_score * 0.016
+        + color_correlation_score * 0.008
+        + saturation_uniformity_score * 0.020
     )
     probability = _sigmoid_score(logit)
     evidence: list[str] = []
     checks = [
         ("Texture distribution outside camera-photo range", texture_anomaly, 42),
+        ("Over-smoothed texture field detected", low_texture_score, 42),
         ("Edge density inconsistent with natural capture", edge_anomaly, 42),
         ("Residual noise pattern inconsistent with camera sensor noise", noise_anomaly, 42),
+        ("Sensor-noise floor is unusually low", low_sensor_noise_score, 42),
         ("Frequency spectrum resembles synthetic rendering/compositing", frequency_anomaly, 42),
         ("Compression seam artifacts detected", seam_score, 55),
+        ("RGB channel correlation resembles rendered/composited content", color_correlation_score, 45),
+        ("Saturation distribution is unusually uniform", saturation_uniformity_score, 45),
     ]
     for label, score, threshold in checks:
         if score >= threshold:
             evidence.append(f"{label}: {int(score)}%")
     if not has_camera_exif:
         evidence.append("Camera EXIF absent; model weighted this as a weak supporting signal.")
-    return ModelSignal(probability, "image_content_model_v1", {**features, "metadata_signal": metadata_signal}, evidence)
+    return ModelSignal(probability, "image_content_model_v1", {
+        **features,
+        "low_texture_score": float(low_texture_score),
+        "low_sensor_noise_score": float(low_sensor_noise_score),
+        "color_correlation": channel_corr,
+        "color_correlation_score": float(color_correlation_score),
+        "saturation_uniformity_score": float(saturation_uniformity_score),
+        "metadata_signal": metadata_signal,
+    }, evidence)
 
 
 def infer_audio_ai_probability(y: np.ndarray, sr: int) -> ModelSignal:

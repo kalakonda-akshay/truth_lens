@@ -173,6 +173,10 @@ def build_pdf(report: AnalysisReport) -> bytes:
                 ["AI Generated Probability", f"{report.scores.deepfake_probability}%"],
                 ["AI Generated Classification", report.ai_classification.upper()],
                 ["Risk Level", report.scores.risk_level.upper()],
+                ["Threat Classification", report.threat_classification.upper()],
+                ["Model Confidence", f"{report.model_confidence}%"],
+                ["Voice Clone Detected", report.voice_clone_detected],
+                ["Deepfake Detection", report.deepfake_detected],
             ],
             "#083344",
         ),
@@ -195,6 +199,18 @@ def build_pdf(report: AnalysisReport) -> bytes:
                     ("PADDING", (0, 0), (-1, -1), 12),
                 ]
             ),
+        ),
+        Spacer(1, 8),
+        _section(
+            "MODEL-BACKED DECISION",
+            [
+                ["Threat Classification", report.threat_classification],
+                ["Model Confidence", f"{report.model_confidence}%"],
+                ["Voice Clone Detected", report.voice_clone_detected],
+                ["Deepfake Detection", report.deepfake_detected],
+                ["Evidence Summary", report.evidence_summary],
+            ],
+            "#164e63",
         ),
         Spacer(1, 8),
         _section(

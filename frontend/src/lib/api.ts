@@ -50,6 +50,11 @@ export type AnalysisReport = {
   }>;
   verdict: string;
   ai_classification: "AI Generated" | "Likely AI Generated" | "Manipulated" | "Authentic" | "Unable To Determine" | string;
+  threat_classification: string;
+  model_confidence: number;
+  evidence_summary: string;
+  voice_clone_detected: string;
+  deepfake_detected: string;
   analysis_summary: string;
   key_findings: string[];
   conclusion: string;
@@ -76,6 +81,11 @@ export function normalizeReport(report: AnalysisReport): AnalysisReport {
     email_analysis: report.email_analysis ?? {},
     verdict: report.verdict ?? (report.scores.deepfake_probability >= 70 ? "Likely Synthetic" : "Needs Verification"),
     ai_classification: report.ai_classification ?? classifyAiProbability(report.scores.deepfake_probability),
+    threat_classification: report.threat_classification ?? `${report.scores.risk_level} Threat`,
+    model_confidence: report.model_confidence ?? report.scores.confidence_score ?? 0,
+    evidence_summary: report.evidence_summary ?? report.evidence.map((item) => item.detail).join("; "),
+    voice_clone_detected: report.voice_clone_detected ?? (Number(report.audio_clone_detection?.synthetic_voice_confidence ?? 0) >= 65 ? "YES" : "NO"),
+    deepfake_detected: report.deepfake_detected ?? (report.media_type === "video" && report.scores.deepfake_probability >= 65 ? "YES" : "NO"),
     analysis_summary: report.analysis_summary ?? "Automated TruthLens forensic analysis completed.",
     key_findings: report.key_findings ?? report.evidence.map((item) => item.detail),
     conclusion: report.conclusion ?? "Results are probabilistic and should be reviewed before high-impact decisions.",

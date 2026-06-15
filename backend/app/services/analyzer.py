@@ -41,6 +41,31 @@ def ai_classification(probability: int) -> str:
     return "Unable To Determine"
 
 
+def threat_classification(score: int, media_type: str = "media") -> str:
+    if score >= 85:
+        return "Critical Threat"
+    if score >= 65:
+        return "High Threat"
+    if score >= 35:
+        return "Medium Threat"
+    return "Low Threat"
+
+
+def _model_confidence(probability: int, evidence_count: int, model_available: bool = True) -> int:
+    certainty = abs(probability - 50)
+    availability_bonus = 12 if model_available else 0
+    return int(np.clip(48 + certainty * 0.65 + min(evidence_count, 6) * 5 + availability_bonus, 45, 98))
+
+
+def _fused_probability(*signals: int) -> int:
+    valid = [int(np.clip(signal, 0, 100)) for signal in signals if signal is not None]
+    if not valid:
+        return 0
+    strongest = max(valid)
+    mean_signal = int(round(float(np.mean(valid))))
+    return int(np.clip(max(strongest, round(strongest * 0.76 + mean_signal * 0.24)), 0, 100))
+
+
 def _dedupe(items: list[str]) -> list[str]:
     seen: set[str] = set()
     output: list[str] = []
@@ -205,7 +230,11 @@ def analyze_image(path: Path, report_id: str, metadata: MetadataReport) -> tuple
     content_model = infer_image_ai_probability(image, has_camera_exif)
     pretrained_model = infer_pretrained_images([Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))])
     visual_score = int(np.clip(np.mean([value for key, value in metrics.items() if key != "faces_detected"]), 0, 100))
-    ai_probability = pretrained_model.probability if pretrained_model.available else content_model.probability
+    ai_probability = _fused_probability(
+        pretrained_model.probability if pretrained_model.available else 0,
+        content_model.probability,
+        visual_score,
+    )
 
     evidence: list[EvidenceItem] = []
     findings: list[str] = []
@@ -436,7 +465,12 @@ def analyze_video(path: Path, report_id: str, media_type: str) -> tuple[dict, li
     classical_video_score = int(np.clip(max(max_frame_score * 0.72 + temporal_score * 0.28, average_top_score * 0.82), 0, 100))
     content_model = infer_video_ai_probability(frame_scores, temporal_score, metric_max)
     pretrained_model = infer_pretrained_images(model_frames)
-    video_score = pretrained_model.probability if pretrained_model.available else content_model.probability
+    video_score = _fused_probability(
+        pretrained_model.probability if pretrained_model.available else 0,
+        content_model.probability,
+        classical_video_score,
+        max_frame_score,
+    )
     evidence.append(EvidenceItem(
         label="Pretrained AI Video-Frame Detector",
         detail=(
@@ -476,6 +510,8 @@ def analyze_video(path: Path, report_id: str, media_type: str) -> tuple[dict, li
         "average_top_frame_anomaly": average_top_score,
         "temporal_inconsistency": temporal_score,
         "video_forensic_score": video_score,
+        "deepfake_probability": video_score,
+        "deepfake_detected": "YES" if video_score >= 65 else "NO",
         "classical_video_forensic_score": classical_video_score,
         "ai_model": content_model.label,
         "ai_model_probability": video_score,
@@ -535,11 +571,16 @@ def analyze_audio_clone(path: Path, media_type: str, report_id: str | None = Non
             raise ValueError("empty audio")
         content_model = infer_audio_ai_probability(y, sr)
         pretrained_model = infer_pretrained_audio(y, sr)
-        confidence = pretrained_model.probability if pretrained_model.available else content_model.probability
+        confidence = _fused_probability(
+            pretrained_model.probability if pretrained_model.available else 0,
+            content_model.probability,
+        )
         frames = [_write_audio_spectrogram(path, report_id, y, sr)] if report_id else []
         features = content_model.features
         return {
             "synthetic_voice_confidence": confidence,
+            "voice_clone_probability": confidence,
+            "voice_clone_detected": "YES" if confidence >= 65 else "NO",
             "ai_model": pretrained_model.model_name if pretrained_model.available else content_model.label,
             "ai_model_probability": confidence,
             "pretrained_model": pretrained_model.model_name,
@@ -585,12 +626,24 @@ def analyze_url_text(raw_url: str) -> AnalysisReport:
     if len([part for part in domain.split(".") if part]) > 3:
         indicators.append("Excessive subdomain depth detected.")
         score += 12
-    if re.search(r"(login|verify|secure|account|update|wallet|reset)", raw_url, re.I):
+    if re.search(r"(login|verify|secure|account|update|wallet|reset|signin|auth|otp|kyc)", raw_url, re.I):
         indicators.append("Credential or account-verification keyword detected.")
         score += 18
-    if re.search(r"(paypa1|g00gle|micros0ft|amaz0n|appleid|secure-bank)", domain, re.I):
+    if re.search(r"(paypa1|g00gle|micros0ft|amaz0n|appleid|secure-bank|faceb00k|whatsapp-login)", domain, re.I):
         indicators.append("Potential typosquatting or brand impersonation detected.")
-        score += 28
+        score += 32
+    if re.search(r"(free|bonus|claim|airdrop|wallet|crypto|bank|loan)", raw_url, re.I):
+        indicators.append("Financial lure or credential-harvesting theme detected.")
+        score += 18
+    if parsed.query and re.search(r"(redirect|url|next|return|continue)=", parsed.query, re.I):
+        indicators.append("Redirect parameter detected in query string.")
+        score += 18
+    if len(domain) > 45:
+        indicators.append("Unusually long domain detected.")
+        score += 12
+    if re.search(r"[a-z]{12,}\\.", domain):
+        indicators.append("High-entropy domain label detected.")
+        score += 16
     if "-" in domain:
         indicators.append("Hyphenated domain structure detected.")
         score += 8
@@ -604,7 +657,7 @@ def analyze_url_text(raw_url: str) -> AnalysisReport:
         filename=raw_url,
         media_type="url",
         uploaded_at=datetime.now(timezone.utc).isoformat(),
-        scores=ScoreCard(authenticity_score=100 - score, deepfake_probability=0, risk_level=level, confidence_score=88, threat_score=score),
+        scores=ScoreCard(authenticity_score=100 - score, deepfake_probability=0, risk_level=level, confidence_score=_model_confidence(score, len(indicators)), threat_score=score),
         metadata=_text_metadata("URL indicator", indicators),
         face_analysis={},
         lip_sync_analysis={},
@@ -614,6 +667,9 @@ def analyze_url_text(raw_url: str) -> AnalysisReport:
         evidence=[EvidenceItem(label="URL Indicator", detail=item, severity=level) for item in indicators if not item.startswith("No ")],
         verdict="Likely Phishing" if score >= 65 else "Suspicious URL" if score >= 35 else "No URL Threat Detected",
         ai_classification=ai_classification(0),
+        threat_classification=threat_classification(score, "url"),
+        model_confidence=_model_confidence(score, len(indicators)),
+        evidence_summary="; ".join([i for i in indicators if not i.startswith("No ")]) or "No URL threat evidence crossed threshold.",
         analysis_summary=f"URL analysis measured {len([i for i in indicators if not i.startswith('No ')])} phishing indicator(s).",
         key_findings=[i for i in indicators if not i.startswith("No ")],
         conclusion="Treat this URL as unsafe until verified." if score >= 35 else "No high-risk URL indicators were detected.",
@@ -625,10 +681,10 @@ def analyze_url_text(raw_url: str) -> AnalysisReport:
 def analyze_email_text(raw_email: str) -> AnalysisReport:
     lowered = raw_email.lower()
     checks = [
-        ("Credential theft language detected.", ["password", "verify your account", "login immediately", "reset your account"], 22),
-        ("Urgency or threat pressure detected.", ["urgent", "suspended", "24 hours", "immediately", "final notice"], 22),
-        ("Payment or reward lure detected.", ["prize", "refund", "invoice", "wire transfer", "gift card", "crypto"], 22),
-        ("Attachment or link risk detected.", [".exe", ".scr", "bit.ly", "tinyurl", "http://"], 22),
+        ("Credential theft language detected.", ["password", "verify your account", "login immediately", "reset your account", "confirm your identity", "otp", "kyc"], 24),
+        ("Urgency or threat pressure detected.", ["urgent", "suspended", "24 hours", "immediately", "final notice", "limited time", "act now"], 22),
+        ("Payment or reward lure detected.", ["prize", "refund", "invoice", "wire transfer", "gift card", "crypto", "tax", "loan", "payment failed"], 24),
+        ("Attachment or link risk detected.", [".exe", ".scr", ".zip", ".html", "bit.ly", "tinyurl", "http://"], 22),
     ]
     indicators: list[str] = []
     score = 0
@@ -638,7 +694,13 @@ def analyze_email_text(raw_email: str) -> AnalysisReport:
             score += points
     if re.search(r"from:.*(support|security|admin).*@(gmail|outlook|yahoo)\.", lowered):
         indicators.append("Impersonation from consumer email domain detected.")
-        score += 22
+        score += 26
+    if re.search(r"(reply-to|return-path):.*@(gmail|outlook|yahoo|proton)\.", lowered) and re.search(r"from:.*@(?!gmail|outlook|yahoo|proton)", lowered):
+        indicators.append("Sender and reply-to domain mismatch detected.")
+        score += 20
+    if re.search(r"(bank|paypal|microsoft|google|apple|meta|instagram|whatsapp|income tax|rbi|sbi|hdfc)", lowered) and re.search(r"(verify|login|suspended|blocked|password|otp)", lowered):
+        indicators.append("Brand impersonation with credential request detected.")
+        score += 28
     if "dear customer" in lowered or "dear user" in lowered:
         indicators.append("Generic greeting often used in phishing.")
         score += 10
@@ -652,7 +714,7 @@ def analyze_email_text(raw_email: str) -> AnalysisReport:
         filename="Pasted email / EML content",
         media_type="email",
         uploaded_at=datetime.now(timezone.utc).isoformat(),
-        scores=ScoreCard(authenticity_score=100 - score, deepfake_probability=0, risk_level=level, confidence_score=86, threat_score=score),
+        scores=ScoreCard(authenticity_score=100 - score, deepfake_probability=0, risk_level=level, confidence_score=_model_confidence(score, len(indicators)), threat_score=score),
         metadata=_text_metadata("Email text / EML", indicators, len(raw_email.encode("utf-8"))),
         face_analysis={},
         lip_sync_analysis={},
@@ -662,6 +724,9 @@ def analyze_email_text(raw_email: str) -> AnalysisReport:
         evidence=[EvidenceItem(label="Email Indicator", detail=item, severity=level) for item in indicators if not item.startswith("No ")],
         verdict="Likely Email Scam" if score >= 65 else "Suspicious Email" if score >= 35 else "No Email Threat Detected",
         ai_classification=ai_classification(0),
+        threat_classification=threat_classification(score, "email"),
+        model_confidence=_model_confidence(score, len(indicators)),
+        evidence_summary="; ".join([i for i in indicators if not i.startswith("No ")]) or "No email threat evidence crossed threshold.",
         analysis_summary=f"Email analysis measured {len([i for i in indicators if not i.startswith('No ')])} scam/phishing indicator(s).",
         key_findings=[i for i in indicators if not i.startswith("No ")],
         conclusion="Treat this email as phishing until verified through another channel." if score >= 35 else "No high-risk email scam indicators were detected.",
@@ -684,10 +749,10 @@ def analyze_upload(file_name: str, content_type: str | None, source: BinaryIO) -
     if media_type == "image":
         image_forensics, suspicious_frames, probability, evidence, findings = analyze_image(destination, report_id, metadata)
         level = risk_level(probability)
-        scores = ScoreCard(authenticity_score=100 - probability, deepfake_probability=probability, risk_level=level, confidence_score=min(96, 62 + len(evidence) * 8), threat_score=probability)
+        scores = ScoreCard(authenticity_score=100 - probability, deepfake_probability=probability, risk_level=level, confidence_score=_model_confidence(probability, len(evidence), bool(image_forensics.get("pretrained_model_available"))), threat_score=probability)
         face_analysis = {"frames_analyzed": 1, "suspicious_frames": len(suspicious_frames), "summary": "Still-image analysis completed using measured image statistics."}
         lip_sync = {"forensic_score": 0, "summary": "Not applicable."}
-        audio_clone = {"synthetic_voice_confidence": 0, "summary": "Not applicable."}
+        audio_clone = {"synthetic_voice_confidence": 0, "voice_clone_probability": 0, "voice_clone_detected": "NO", "summary": "Not applicable."}
         verdict = "Likely AI Generated or Manipulated" if probability >= 65 else "Review Recommended" if probability >= 35 else "No Strong Image Manipulation Detected"
         key_findings = findings
     else:
@@ -728,6 +793,7 @@ def analyze_upload(file_name: str, content_type: str | None, source: BinaryIO) -
             lip_sync_score=lip_sync["forensic_score"],
             audio_clone_confidence=audio_clone["synthetic_voice_confidence"],
         )
+        scores.confidence_score = _model_confidence(scores.deepfake_probability, len(video_evidence) + len(audio_evidence), True)
         primary_evidence = video_evidence + audio_evidence
         evidence = primary_evidence + [item for item in evidence if item.detail not in {existing.detail for existing in primary_evidence}]
         if not evidence and any(not item.startswith("No ") for item in metadata.tampering_indicators):
@@ -743,6 +809,9 @@ def analyze_upload(file_name: str, content_type: str | None, source: BinaryIO) -
 
     if not key_findings:
         key_findings = ["No high-risk forensic indicators were detected by the available analysis modules."]
+    evidence_summary = "; ".join([item.detail for item in evidence[:5]]) if evidence else "No evidence item crossed the reporting threshold."
+    voice_clone_detected = str(audio_clone.get("voice_clone_detected", "NO"))
+    deepfake_detected = "YES" if media_type == "video" and scores.deepfake_probability >= 65 else "NO"
     return AnalysisReport(
         id=report_id,
         filename=file_name,
@@ -758,6 +827,11 @@ def analyze_upload(file_name: str, content_type: str | None, source: BinaryIO) -
         evidence=evidence,
         verdict=verdict,
         ai_classification=ai_classification(scores.deepfake_probability),
+        threat_classification=threat_classification(scores.threat_score, media_type),
+        model_confidence=scores.confidence_score,
+        evidence_summary=evidence_summary,
+        voice_clone_detected=voice_clone_detected,
+        deepfake_detected=deepfake_detected,
         analysis_summary=f"{media_type.title()} analysis completed using measured forensic indicators only.",
         key_findings=key_findings,
         conclusion="High-risk indicators were detected; human verification is recommended before trust or sharing." if scores.threat_score >= 35 else "No high-risk indicators were detected; normal source verification is still recommended.",
