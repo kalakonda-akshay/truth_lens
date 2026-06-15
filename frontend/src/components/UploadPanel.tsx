@@ -3,8 +3,7 @@
 import { useCallback, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { CloudUpload, FileAudio, FileImage, FileText, FileVideo, Link as LinkIcon, ShieldCheck } from "lucide-react";
-import { API_URL, fetchTextAnalysis, normalizeReport } from "@/lib/api";
-import { analyzeEmailInput, analyzeUrlInput } from "@/lib/textAnalysis";
+import { API_PROXY_URL, fetchTextAnalysis, normalizeReport } from "@/lib/api";
 import { recordScan } from "@/lib/scanStats";
 
 const analysisModes = [
@@ -78,11 +77,7 @@ export function UploadPanel() {
     setIsAnalyzing(true);
     try {
       const textMode = mode === "url" ? "url" : "email";
-      const report = API_URL
-        ? await fetchTextAnalysis(textMode, textInput)
-        : textMode === "url"
-          ? analyzeUrlInput(textInput)
-          : analyzeEmailInput(textInput);
+      const report = await fetchTextAnalysis(textMode, textInput);
       sessionStorage.setItem(`truthlens:report:${report.id}`, JSON.stringify(report));
       recordScan(report.media_type, report.scores.risk_level);
       setProgress(100);
@@ -117,21 +112,16 @@ export function UploadPanel() {
         setProgress((value) => Math.min(value + 9, 88));
       }, 420);
 
-      let report;
-      if (API_URL) {
-        const controller = new AbortController();
-        const timeout = window.setTimeout(() => controller.abort(), 120000);
-        const response = await fetch(`${API_URL}/analyze`, {
-          method: "POST",
-          body: form,
-          signal: controller.signal,
-        });
-        window.clearTimeout(timeout);
-        if (!response.ok) throw new Error("Analysis failed");
-        report = normalizeReport(await response.json());
-      } else {
-        throw new Error("Model-backed media analysis requires the FastAPI backend.");
-      }
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), 120000);
+      const response = await fetch(`${API_PROXY_URL}/analyze`, {
+        method: "POST",
+        body: form,
+        signal: controller.signal,
+      });
+      window.clearTimeout(timeout);
+      if (!response.ok) throw new Error("Analysis failed");
+      const report = normalizeReport(await response.json());
 
       window.clearInterval(timer);
       sessionStorage.setItem(`truthlens:report:${report.id}`, JSON.stringify(report));
@@ -139,7 +129,7 @@ export function UploadPanel() {
       setProgress(100);
       router.push(`/results/${report.id}`);
     } catch {
-      setError(API_URL ? "Analysis service timed out or is unavailable. Check the FastAPI backend URL." : "Model-backed media analysis requires NEXT_PUBLIC_API_URL to point to the FastAPI backend.");
+      setError("Analysis service timed out or is unavailable. Check the FastAPI backend URL.");
       setProgress(0);
     } finally {
       if (timer) window.clearInterval(timer);

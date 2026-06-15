@@ -1,4 +1,5 @@
 export const API_URL = (process.env.NEXT_PUBLIC_API_URL ?? "").replace(/\/$/, "");
+export const API_PROXY_URL = "/api";
 
 export type AnalysisReport = {
   id: string;
@@ -87,10 +88,7 @@ export function classifyAiProbability(probability: number) {
 }
 
 export async function fetchTextAnalysis(kind: "url" | "email", content: string): Promise<AnalysisReport> {
-  if (!API_URL) {
-    throw new Error("No external API configured");
-  }
-  const response = await fetch(`${API_URL}/analyze/${kind}`, {
+  const response = await fetch(`${API_PROXY_URL}/analyze/${kind}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ content }),
@@ -102,10 +100,7 @@ export async function fetchTextAnalysis(kind: "url" | "email", content: string):
 }
 
 export async function fetchReport(id: string): Promise<AnalysisReport> {
-  if (!API_URL) {
-    throw new Error("No external API configured");
-  }
-  const response = await fetch(`${API_URL}/reports/${id}`, { cache: "no-store" });
+  const response = await fetch(`${API_PROXY_URL}/reports/${id}`, { cache: "no-store" });
   if (!response.ok) {
     throw new Error("Unable to load report");
   }
