@@ -1,6 +1,14 @@
 export const API_URL = (process.env.NEXT_PUBLIC_API_URL ?? "").replace(/\/$/, "");
 export const API_PROXY_URL = "/api";
 
+export function backendCandidates(path: string) {
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+  return [
+    ...(API_URL ? [`${API_URL}${normalizedPath}`] : []),
+    `${API_PROXY_URL}${normalizedPath}`,
+  ];
+}
+
 export type AnalysisReport = {
   id: string;
   filename: string;
@@ -88,21 +96,33 @@ export function classifyAiProbability(probability: number) {
 }
 
 export async function fetchTextAnalysis(kind: "url" | "email", content: string): Promise<AnalysisReport> {
-  const response = await fetch(`${API_PROXY_URL}/analyze/${kind}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ content }),
-  });
-  if (!response.ok) {
-    throw new Error("Unable to analyze text input");
+  for (const endpoint of backendCandidates(`/analyze/${kind}`)) {
+    try {
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content }),
+      });
+      if (response.ok) {
+        return normalizeReport(await response.json());
+      }
+    } catch {
+      // Try the next endpoint. Production prefers Railway directly and falls back to the Vercel proxy.
+    }
   }
-  return normalizeReport(await response.json());
+  throw new Error("Unable to analyze text input");
 }
 
 export async function fetchReport(id: string): Promise<AnalysisReport> {
-  const response = await fetch(`${API_PROXY_URL}/reports/${id}`, { cache: "no-store" });
-  if (!response.ok) {
-    throw new Error("Unable to load report");
+  for (const endpoint of backendCandidates(`/reports/${id}`)) {
+    try {
+      const response = await fetch(endpoint, { cache: "no-store" });
+      if (response.ok) {
+        return normalizeReport(await response.json());
+      }
+    } catch {
+      // Try the next endpoint.
+    }
   }
-  return normalizeReport(await response.json());
+  throw new Error("Unable to load report");
 }

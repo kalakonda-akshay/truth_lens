@@ -3,7 +3,7 @@
 import { useCallback, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { CloudUpload, FileAudio, FileImage, FileText, FileVideo, Link as LinkIcon, ShieldCheck } from "lucide-react";
-import { API_PROXY_URL, fetchTextAnalysis, normalizeReport } from "@/lib/api";
+import { backendCandidates, fetchTextAnalysis, normalizeReport } from "@/lib/api";
 import { recordScan } from "@/lib/scanStats";
 
 const analysisModes = [
@@ -115,16 +115,27 @@ export function UploadPanel() {
         setProgress((value) => Math.min(value + 9, 88));
       }, 420);
 
-      const controller = new AbortController();
-      const timeout = window.setTimeout(() => controller.abort(), 120000);
-      const response = await fetch(`${API_PROXY_URL}/analyze`, {
-        method: "POST",
-        body: form,
-        signal: controller.signal,
-      });
-      window.clearTimeout(timeout);
-      if (!response.ok) throw new Error("Analysis failed");
-      const report = normalizeReport(await response.json());
+      let report = null;
+      for (const endpoint of backendCandidates("/analyze")) {
+        const controller = new AbortController();
+        const timeout = window.setTimeout(() => controller.abort(), 300000);
+        try {
+          const response = await fetch(endpoint, {
+            method: "POST",
+            body: form,
+            signal: controller.signal,
+          });
+          if (response.ok) {
+            report = normalizeReport(await response.json());
+            break;
+          }
+        } catch {
+          // Try the next endpoint. Railway direct avoids Vercel function timeouts for larger media.
+        } finally {
+          window.clearTimeout(timeout);
+        }
+      }
+      if (!report) throw new Error("Analysis failed");
 
       window.clearInterval(timer);
       const storageKey = `truthlens:report:${report.id}`;
