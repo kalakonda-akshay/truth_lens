@@ -21,6 +21,10 @@ class Settings(BaseSettings):
         env_origins = self.allowed_origins or ""
         return [origin.strip() for origin in env_origins.split(",") if origin.strip()]
 
+    @property
+    def origin_regex(self) -> str:
+        return r"https://.*\.vercel\.app|http://localhost:\d+"
+
 
 @lru_cache
 def get_settings() -> Settings:
