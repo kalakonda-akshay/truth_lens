@@ -304,14 +304,17 @@ export default function ResultsPage() {
   const [error, setError] = useState("");
 
   useEffect(() => {
-    const stored = sessionStorage.getItem(`truthlens:report:${id}`);
+    const storageKey = `truthlens:report:${id}`;
+    const stored = sessionStorage.getItem(storageKey) ?? localStorage.getItem(storageKey);
     if (stored) {
       setReport(normalizeReport(JSON.parse(stored)));
       return;
     }
     fetchReport(id)
       .then((nextReport) => {
-        sessionStorage.setItem(`truthlens:report:${nextReport.id}`, JSON.stringify(nextReport));
+        const serializedReport = JSON.stringify(nextReport);
+        sessionStorage.setItem(`truthlens:report:${nextReport.id}`, serializedReport);
+        localStorage.setItem(`truthlens:report:${nextReport.id}`, serializedReport);
         setReport(nextReport);
       })
       .catch(() => setError("Report not found in this browser session. Run a new TruthLens analysis."));

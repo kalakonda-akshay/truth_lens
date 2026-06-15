@@ -78,7 +78,10 @@ export function UploadPanel() {
     try {
       const textMode = mode === "url" ? "url" : "email";
       const report = await fetchTextAnalysis(textMode, textInput);
-      sessionStorage.setItem(`truthlens:report:${report.id}`, JSON.stringify(report));
+      const storageKey = `truthlens:report:${report.id}`;
+      const serializedReport = JSON.stringify(report);
+      sessionStorage.setItem(storageKey, serializedReport);
+      localStorage.setItem(storageKey, serializedReport);
       recordScan(report.media_type, report.scores.risk_level);
       setProgress(100);
       router.push(`/results/${report.id}`);
@@ -124,7 +127,10 @@ export function UploadPanel() {
       const report = normalizeReport(await response.json());
 
       window.clearInterval(timer);
-      sessionStorage.setItem(`truthlens:report:${report.id}`, JSON.stringify(report));
+      const storageKey = `truthlens:report:${report.id}`;
+      const serializedReport = JSON.stringify(report);
+      sessionStorage.setItem(storageKey, serializedReport);
+      localStorage.setItem(storageKey, serializedReport);
       recordScan(report.media_type, report.scores.risk_level);
       setProgress(100);
       router.push(`/results/${report.id}`);
