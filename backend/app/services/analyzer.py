@@ -74,6 +74,23 @@ def _fused_probability(*signals: int) -> int:
     return int(np.clip(max(strongest, round(strongest * 0.76 + mean_signal * 0.24)), 0, 100))
 
 
+def _fused_image_probability(pretrained_score: int, content_score: int, visual_score: int, evidence_count: int, has_camera_exif: bool) -> int:
+    pretrained_score = int(np.clip(pretrained_score, 0, 100))
+    content_score = int(np.clip(content_score, 0, 100))
+    visual_score = int(np.clip(visual_score, 0, 100))
+    supported_score = _fused_probability(content_score, visual_score)
+
+    # A single image classifier can false-positive on ordinary photos. Only let
+    # it dominate when measured forensic features also support the claim.
+    if pretrained_score >= 65 and content_score < 45 and visual_score < 35 and evidence_count <= (0 if has_camera_exif else 1):
+        return int(np.clip(max(supported_score, min(pretrained_score, 24)), 0, 100))
+
+    if pretrained_score >= 65 and content_score < 55 and visual_score < 45:
+        return int(np.clip(max(supported_score, round(pretrained_score * 0.42 + content_score * 0.38 + visual_score * 0.20)), 0, 68))
+
+    return _fused_probability(pretrained_score, content_score, visual_score)
+
+
 def _dedupe(items: list[str]) -> list[str]:
     seen: set[str] = set()
     output: list[str] = []
@@ -238,10 +255,12 @@ def analyze_image(path: Path, report_id: str, metadata: MetadataReport) -> tuple
     content_model = infer_image_ai_probability(image, has_camera_exif)
     pretrained_model = infer_pretrained_images([Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))])
     visual_score = int(np.clip(np.mean([value for key, value in metrics.items() if key != "faces_detected"]), 0, 100))
-    ai_probability = _fused_probability(
+    ai_probability = _fused_image_probability(
         pretrained_model.probability if pretrained_model.available else 0,
         content_model.probability,
         visual_score,
+        len([item for item in content_model.evidence if "EXIF absent" not in item and "Compression seam" not in item]),
+        has_camera_exif,
     )
 
     evidence: list[EvidenceItem] = []

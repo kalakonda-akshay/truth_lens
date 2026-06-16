@@ -8,6 +8,7 @@ from app.services.content_models import (
     infer_image_ai_probability,
     infer_video_ai_probability,
 )
+from app.services.analyzer import _fused_image_probability
 
 
 class ContentModelTests(unittest.TestCase):
@@ -27,6 +28,17 @@ class ContentModelTests(unittest.TestCase):
         self.assertLess(real_score, 25)
         self.assertGreater(synthetic_score, 75)
         self.assertGreater(synthetic_score - real_score, 50)
+
+    def test_image_fusion_rejects_unsupported_pretrained_false_positive(self):
+        fused = _fused_image_probability(
+            pretrained_score=88,
+            content_score=18,
+            visual_score=12,
+            evidence_count=0,
+            has_camera_exif=True,
+        )
+
+        self.assertLess(fused, 35)
 
     def test_audio_scores_separate_dynamic_and_uniform_voice_patterns(self):
         sr = 16000
