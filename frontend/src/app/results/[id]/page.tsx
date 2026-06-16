@@ -109,6 +109,14 @@ function TruthLensReport({ report }: { report: AnalysisReport }) {
           ["RMS Energy", String(report.audio_clone_detection.rms_energy ?? "Not available")],
           ["Synthetic Voice Score", `${report.audio_clone_detection.synthetic_voice_confidence ?? 0}%`],
         ]
+      : report.media_type === "url"
+        ? [
+            ["Domain", String(report.url_analysis.domain ?? "Not available")],
+            ["Scheme", String(report.url_analysis.scheme ?? "Not available")],
+            ["Credential Harvesting", report.url_analysis.credential_harvesting ? "Detected" : "Not detected"],
+            ["Redirect Risk", report.url_analysis.redirect_risk ? "Detected" : "Not detected"],
+            ["Typosquatting", report.url_analysis.typosquatting ? "Detected" : "Not detected"],
+          ]
       : [
           ["Frames Analyzed", String(report.face_analysis.frames_analyzed ?? 0)],
           ["Suspicious Frames", String(report.face_analysis.suspicious_frames ?? 0)],
@@ -242,10 +250,10 @@ function TruthLensReport({ report }: { report: AnalysisReport }) {
               ]}
             />
           </Section>
-          <Section title="Visual Analysis" index={4}>
+          <Section title={isUrl ? "URL Threat Analysis" : "Visual Analysis"} index={4}>
             <DetailRows rows={visualRows.slice(0, 5) as Array<[string, string]>} />
           </Section>
-          <Section title="AI Artifact Detection" index={5}>
+          <Section title={isUrl ? "URL Evidence Detected" : "AI Artifact Detection"} index={5}>
             <DetailRows rows={(artifactRows.length ? artifactRows.slice(0, 5) : [["Indicators", "No high-risk artifact indicators detected"]]) as Array<[string, string]>} />
           </Section>
         </div>
@@ -261,7 +269,7 @@ function TruthLensReport({ report }: { report: AnalysisReport }) {
                 <div className="mt-1 flex justify-between text-[11px] font-bold text-slate-700"><span>Low Suspicion</span><span>High Suspicion</span></div>
               </div>
             ) : (
-              <p className="text-sm text-slate-600">No heatmap, bounding box, suspicious region, spectrogram, or frame evidence crossed reporting threshold.</p>
+              <p className="text-sm text-slate-600">{isUrl ? "URL evidence is shown through the threat indicators and key findings." : "No heatmap, bounding box, suspicious region, spectrogram, or frame evidence crossed reporting threshold."}</p>
             )}
           </Section>
           <Section title="Key Findings" index={7}>
