@@ -291,10 +291,10 @@ def analyze_image(path: Path, report_id: str, metadata: MetadataReport) -> tuple
             x, y, bw, bh = cv2.boundingRect(contour)
             cv2.rectangle(overlay, (x, y), (x + bw, y + bh), (0, 255, 255), 3)
             boxes += 1
-        if boxes:
+        if boxes or ai_probability >= 65:
             frame_name = f"{report_id}-image-evidence.jpg"
             cv2.imwrite(str(settings.storage_dir / "frames" / frame_name), overlay)
-            suspicious.append(SuspiciousFrame(timestamp_seconds=0, frame_url=f"/frames/{frame_name}", reason="Heatmap is derived from measured local edge/noise residual anomalies.", score=visual_score))
+            suspicious.append(SuspiciousFrame(timestamp_seconds=0, frame_url=f"/frames/{frame_name}", reason="Heatmap is derived from measured local edge/noise residual anomalies and model-supported AI evidence.", score=max(visual_score, ai_probability)))
 
     metrics.update({
         "summary": "Image content model evaluated pixel texture, residual noise, frequency spectrum, compression seams, camera metadata support, and OpenCV visual anomalies.",
