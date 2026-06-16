@@ -28,6 +28,13 @@ function riskTone(risk: string) {
   return "bg-emerald-500 text-white";
 }
 
+function urlThreatTone(classification: string) {
+  if (classification === "MALICIOUS") return "bg-red-700 text-white";
+  if (classification === "LIKELY PHISHING") return "bg-red-600 text-white";
+  if (classification === "SUSPICIOUS") return "bg-orange-500 text-white";
+  return "bg-emerald-500 text-white";
+}
+
 function reportDate(value: string) {
   return new Date(value).toLocaleString(undefined, {
     year: "numeric",
@@ -84,6 +91,11 @@ function ScoreCircle({ title, value, caption, color }: { title: string; value: n
 }
 
 function TruthLensReport({ report }: { report: AnalysisReport }) {
+  const isUrl = report.media_type === "url";
+  const urlThreatScore = Number(report.url_analysis.threat_score ?? report.scores.threat_score ?? 0);
+  const phishingProbability = Number(report.url_analysis.phishing_probability ?? report.scores.deepfake_probability ?? report.scores.threat_score ?? 0);
+  const domainRiskScore = Number(report.url_analysis.domain_risk_score ?? 0);
+  const urlThreatClassification = String(report.url_analysis.threat_classification ?? report.threat_classification ?? "SAFE").toUpperCase();
   const visualRows = report.media_type === "image"
     ? [
         ["Texture Consistency", String(report.image_forensics.texture_inconsistency ?? "Not triggered")],
@@ -161,7 +173,7 @@ function TruthLensReport({ report }: { report: AnalysisReport }) {
               <img src={frameSource(evidenceFrame.frame_url)} alt={evidenceFrame.reason} className="h-56 w-full object-cover" />
             ) : (
               <div className="grid h-56 place-items-center bg-gradient-to-br from-slate-900 to-cyan-950 text-center text-sm font-bold text-cyan-100">
-                No visual evidence generated
+                {isUrl ? "URL evidence is listed in findings" : "No visual evidence generated"}
               </div>
             )}
             <p className="bg-[#061d38] py-2 text-center text-sm font-black uppercase text-white">Evidence Preview</p>
@@ -172,31 +184,50 @@ function TruthLensReport({ report }: { report: AnalysisReport }) {
               rows={[
                 ["Media Type Detected", report.media_type.toUpperCase()],
                 ["Analysis Performed", report.analysis_summary],
-                ["Overall Authenticity", `${report.scores.authenticity_score}%`],
-                ["AI Probability", `${report.scores.deepfake_probability}%`],
-                ["Risk Level", report.scores.risk_level.toUpperCase()],
-                ["Threat Classification", report.threat_classification.toUpperCase()],
+                ...(isUrl
+                  ? [
+                      ["Threat Score", `${urlThreatScore}%`] as [string, string],
+                      ["Phishing Probability", `${phishingProbability}%`] as [string, string],
+                      ["Domain Risk Score", `${domainRiskScore}%`] as [string, string],
+                      ["Threat Classification", urlThreatClassification] as [string, string],
+                    ]
+                  : [
+                      ["Overall Authenticity", `${report.scores.authenticity_score}%`] as [string, string],
+                      ["AI Probability", `${report.scores.deepfake_probability}%`] as [string, string],
+                      ["Risk Level", report.scores.risk_level.toUpperCase()] as [string, string],
+                      ["Threat Classification", report.threat_classification.toUpperCase()] as [string, string],
+                    ]),
                 ["Model Confidence", `${report.model_confidence}%`],
                 ...(report.media_type === "audio" ? [["Voice Clone Detected", report.voice_clone_detected.toUpperCase()] as [string, string]] : []),
                 ...(report.media_type === "video" ? [["Deepfake Detection", report.deepfake_detected.toUpperCase()] as [string, string]] : []),
               ]}
             />
-            <div className={`mt-4 rounded-lg border px-4 py-3 text-center text-lg font-black ${classificationTone(report.ai_classification)}`}>
-              AI CLASSIFICATION: {report.ai_classification.toUpperCase()}
+            <div className={`mt-4 rounded-lg border px-4 py-3 text-center text-lg font-black ${isUrl ? urlThreatTone(urlThreatClassification) : classificationTone(report.ai_classification)}`}>
+              {isUrl ? `THREAT CLASSIFICATION: ${urlThreatClassification}` : `AI CLASSIFICATION: ${report.ai_classification.toUpperCase()}`}
             </div>
           </Section>
         </div>
 
         <section className="grid grid-cols-3 rounded-xl border border-slate-300 bg-white p-4">
-          <ScoreCircle title="Authenticity Score" value={report.scores.authenticity_score} caption={report.ai_classification === "Authentic" ? "Likely Authentic" : "Review Required"} color="#2f9b68" />
-          <ScoreCircle title="AI Generated Probability" value={report.scores.deepfake_probability} caption={report.ai_classification} color="#dc2626" />
-          <div className="flex flex-col items-center justify-center px-4">
+          {isUrl ? (
+            <>
+              <ScoreCircle title="Threat Score" value={urlThreatScore} caption={urlThreatClassification} color="#dc2626" />
+              <ScoreCircle title="Phishing Probability" value={phishingProbability} caption="URL Threat" color="#f97316" />
+              <ScoreCircle title="Domain Risk Score" value={domainRiskScore} caption={String(report.url_analysis.domain ?? "Domain")} color="#0ea5e9" />
+            </>
+          ) : (
+            <>
+              <ScoreCircle title="Authenticity Score" value={report.scores.authenticity_score} caption={report.ai_classification === "Authentic" ? "Likely Authentic" : "Review Required"} color="#2f9b68" />
+              <ScoreCircle title="AI Generated Probability" value={report.scores.deepfake_probability} caption={report.ai_classification} color="#dc2626" />
+            </>
+          )}
+          {!isUrl && <div className="flex flex-col items-center justify-center px-4">
             <h3 className="mb-6 text-center text-base font-black uppercase text-[#0b1b4f]">Risk Level</h3>
             <div className={`w-full rounded-xl p-8 text-center ${riskTone(report.scores.risk_level)}`}>
               <p className="text-4xl font-black">{report.scores.risk_level.toUpperCase()}</p>
               <p className="mt-3 text-sm font-bold">{report.conclusion}</p>
             </div>
-          </div>
+          </div>}
         </section>
 
         <div className="grid grid-cols-3 gap-3">

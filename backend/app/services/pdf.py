@@ -42,6 +42,37 @@ def _section(title: str, rows: list[list[str]], header_color: str = "#0f172a") -
 
 
 def _score_cards(report: AnalysisReport) -> Table:
+    if report.media_type == "url":
+        threat_score = int(report.url_analysis.get("threat_score", report.scores.threat_score))
+        phishing_probability = int(report.url_analysis.get("phishing_probability", report.scores.deepfake_probability))
+        domain_risk_score = int(report.url_analysis.get("domain_risk_score", 0))
+        classification = str(report.url_analysis.get("threat_classification", report.threat_classification)).upper()
+        risk_color = "#dc2626" if threat_score >= 65 else "#f59e0b" if threat_score >= 35 else "#059669"
+        table = Table(
+            [
+                ["THREAT SCORE", "PHISHING PROBABILITY", "DOMAIN RISK SCORE", "THREAT CLASSIFICATION"],
+                [f"{threat_score}%", f"{phishing_probability}%", f"{domain_risk_score}%", classification],
+            ],
+            colWidths=[1.72 * inch] * 4,
+        )
+        table.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#eaf8fb")),
+                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#0f172a")),
+                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                    ("FONTSIZE", (0, 0), (-1, 0), 8),
+                    ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                    ("FONTNAME", (0, 1), (-1, 1), "Helvetica-Bold"),
+                    ("FONTSIZE", (0, 1), (-1, 1), 16),
+                    ("TEXTCOLOR", (0, 1), (-1, 1), colors.HexColor(risk_color)),
+                    ("BOX", (0, 0), (-1, -1), 0.75, colors.HexColor("#cbd5e1")),
+                    ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#e2e8f0")),
+                    ("PADDING", (0, 0), (-1, -1), 10),
+                ]
+            )
+        )
+        return table
     risk_color = "#dc2626" if report.scores.risk_level in {"High", "Critical"} else "#f59e0b" if report.scores.risk_level == "Medium" else "#059669"
     table = Table(
         [
@@ -169,9 +200,19 @@ def build_pdf(report: AnalysisReport) -> bytes:
             [
                 ["Media Type Detected", report.media_type.title()],
                 ["Analysis Performed", report.analysis_summary],
-                ["Overall Authenticity", f"{report.scores.authenticity_score}%"],
-                ["AI Generated Probability", f"{report.scores.deepfake_probability}%"],
-                ["AI Generated Classification", report.ai_classification.upper()],
+                *(
+                    [
+                        ["Threat Score", f"{report.url_analysis.get('threat_score', report.scores.threat_score)}%"],
+                        ["Phishing Probability", f"{report.url_analysis.get('phishing_probability', report.scores.deepfake_probability)}%"],
+                        ["Domain Risk Score", f"{report.url_analysis.get('domain_risk_score', 0)}%"],
+                    ]
+                    if report.media_type == "url"
+                    else [
+                        ["Overall Authenticity", f"{report.scores.authenticity_score}%"],
+                        ["AI Generated Probability", f"{report.scores.deepfake_probability}%"],
+                        ["AI Generated Classification", report.ai_classification.upper()],
+                    ]
+                ),
                 ["Risk Level", report.scores.risk_level.upper()],
                 ["Threat Classification", report.threat_classification.upper()],
                 ["Model Confidence", f"{report.model_confidence}%"],
@@ -184,14 +225,17 @@ def build_pdf(report: AnalysisReport) -> bytes:
         _score_cards(report),
         Spacer(1, 8),
         Table(
-            [["AI CLASSIFICATION", report.ai_classification.upper()]],
+            [[
+                "THREAT CLASSIFICATION" if report.media_type == "url" else "AI CLASSIFICATION",
+                str(report.url_analysis.get("threat_classification", report.threat_classification)).upper() if report.media_type == "url" else report.ai_classification.upper(),
+            ]],
             colWidths=[2.25 * inch, 4.65 * inch],
             style=TableStyle(
                 [
                     ("BACKGROUND", (0, 0), (0, 0), colors.HexColor("#031225")),
                     ("TEXTCOLOR", (0, 0), (0, 0), colors.white),
-                    ("BACKGROUND", (1, 0), (1, 0), colors.HexColor(_classification_color(report.ai_classification))),
-                    ("TEXTCOLOR", (1, 0), (1, 0), colors.white if report.ai_classification != "Manipulated" else colors.HexColor("#0f172a")),
+                    ("BACKGROUND", (1, 0), (1, 0), colors.HexColor("#dc2626" if report.media_type == "url" and report.scores.threat_score >= 65 else _classification_color(report.ai_classification))),
+                    ("TEXTCOLOR", (1, 0), (1, 0), colors.white if report.ai_classification != "Manipulated" or report.media_type == "url" else colors.HexColor("#0f172a")),
                     ("FONTNAME", (0, 0), (-1, -1), "Helvetica-Bold"),
                     ("FONTSIZE", (0, 0), (-1, -1), 14),
                     ("ALIGN", (0, 0), (-1, -1), "CENTER"),

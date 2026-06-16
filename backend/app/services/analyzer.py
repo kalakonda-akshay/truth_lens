@@ -42,6 +42,14 @@ def ai_classification(probability: int) -> str:
 
 
 def threat_classification(score: int, media_type: str = "media") -> str:
+    if media_type == "url":
+        if score >= 85:
+            return "MALICIOUS"
+        if score >= 65:
+            return "LIKELY PHISHING"
+        if score >= 35:
+            return "SUSPICIOUS"
+        return "SAFE"
     if score >= 85:
         return "Critical Threat"
     if score >= 65:
@@ -650,24 +658,48 @@ def analyze_url_text(raw_url: str) -> AnalysisReport:
     if not indicators:
         indicators.append("No phishing URL indicators detected.")
     score = int(np.clip(score, 0, 100))
+    domain_risk_score = int(np.clip(
+        (25 if re.search(r"(paypa1|g00gle|micros0ft|amaz0n|appleid|secure-bank|faceb00k|whatsapp-login)", domain, re.I) else 0)
+        + (18 if "-" in domain else 0)
+        + (18 if len(domain) > 45 else 0)
+        + (20 if re.search(r"[a-z]{12,}\\.", domain) else 0)
+        + (20 if re.search(r"\d+\.\d+\.\d+\.\d+", domain) else 0)
+        + (12 if len([part for part in domain.split(".") if part]) > 3 else 0),
+        0,
+        100,
+    ))
+    phishing_probability = int(np.clip(max(score, round(score * 0.72 + domain_risk_score * 0.28)), 0, 100))
     level = risk_level(score)
     report_id = str(uuid.uuid4())
+    classification = threat_classification(score, "url")
     return AnalysisReport(
         id=report_id,
         filename=raw_url,
         media_type="url",
         uploaded_at=datetime.now(timezone.utc).isoformat(),
-        scores=ScoreCard(authenticity_score=100 - score, deepfake_probability=0, risk_level=level, confidence_score=_model_confidence(score, len(indicators)), threat_score=score),
+        scores=ScoreCard(authenticity_score=100 - score, deepfake_probability=phishing_probability, risk_level=level, confidence_score=_model_confidence(score, len(indicators)), threat_score=score),
         metadata=_text_metadata("URL indicator", indicators),
         face_analysis={},
         lip_sync_analysis={},
         audio_clone_detection={},
-        url_analysis={"domain": domain, "scheme": parsed.scheme, "path": parsed.path, "indicators": indicators},
+        url_analysis={
+            "domain": domain,
+            "scheme": parsed.scheme,
+            "path": parsed.path,
+            "indicators": indicators,
+            "threat_score": score,
+            "phishing_probability": phishing_probability,
+            "domain_risk_score": domain_risk_score,
+            "threat_classification": classification,
+            "credential_harvesting": any("Credential" in item for item in indicators),
+            "redirect_risk": any("Redirect" in item or "redirection" in item for item in indicators),
+            "typosquatting": any("typosquatting" in item.lower() for item in indicators),
+        },
         suspicious_frames=[],
         evidence=[EvidenceItem(label="URL Indicator", detail=item, severity=level) for item in indicators if not item.startswith("No ")],
         verdict="Likely Phishing" if score >= 65 else "Suspicious URL" if score >= 35 else "No URL Threat Detected",
         ai_classification=ai_classification(0),
-        threat_classification=threat_classification(score, "url"),
+        threat_classification=classification,
         model_confidence=_model_confidence(score, len(indicators)),
         evidence_summary="; ".join([i for i in indicators if not i.startswith("No ")]) or "No URL threat evidence crossed threshold.",
         analysis_summary=f"URL analysis measured {len([i for i in indicators if not i.startswith('No ')])} phishing indicator(s).",
