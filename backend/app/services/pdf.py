@@ -42,10 +42,10 @@ def _section(title: str, rows: list[list[str]], header_color: str = "#0f172a") -
 
 
 def _score_cards(report: AnalysisReport) -> Table:
-    if report.media_type == "url":
+    if report.media_type in {"url", "email"}:
         threat_score = int(report.url_analysis.get("threat_score", report.scores.threat_score))
-        phishing_probability = int(report.url_analysis.get("phishing_probability", report.scores.deepfake_probability))
-        domain_risk_score = int(report.url_analysis.get("domain_risk_score", 0))
+        phishing_probability = int(report.url_analysis.get("phishing_probability", report.scores.threat_score))
+        domain_risk_score = int(report.url_analysis.get("domain_risk_score", report.scores.threat_score))
         classification = str(report.url_analysis.get("threat_classification", report.threat_classification)).upper()
         risk_color = "#dc2626" if threat_score >= 65 else "#f59e0b" if threat_score >= 35 else "#059669"
         table = Table(
@@ -204,9 +204,9 @@ def build_pdf(report: AnalysisReport) -> bytes:
                     [
                         ["Threat Score", f"{report.url_analysis.get('threat_score', report.scores.threat_score)}%"],
                         ["Phishing Probability", f"{report.url_analysis.get('phishing_probability', report.scores.deepfake_probability)}%"],
-                        ["Domain Risk Score", f"{report.url_analysis.get('domain_risk_score', 0)}%"],
+                        ["Domain Risk Score", f"{report.url_analysis.get('domain_risk_score', report.scores.threat_score)}%"],
                     ]
-                    if report.media_type == "url"
+                    if report.media_type in {"url", "email"}
                     else [
                         ["Overall Authenticity", f"{report.scores.authenticity_score}%"],
                         ["AI Generated Probability", f"{report.scores.deepfake_probability}%"],
@@ -234,7 +234,7 @@ def build_pdf(report: AnalysisReport) -> bytes:
                 [
                     ("BACKGROUND", (0, 0), (0, 0), colors.HexColor("#031225")),
                     ("TEXTCOLOR", (0, 0), (0, 0), colors.white),
-                    ("BACKGROUND", (1, 0), (1, 0), colors.HexColor("#dc2626" if report.media_type == "url" and report.scores.threat_score >= 65 else _classification_color(report.ai_classification))),
+                    ("BACKGROUND", (1, 0), (1, 0), colors.HexColor("#dc2626" if report.media_type in {"url", "email"} and report.scores.threat_score >= 65 else _classification_color(report.ai_classification))),
                     ("TEXTCOLOR", (1, 0), (1, 0), colors.white if report.ai_classification != "Manipulated" or report.media_type == "url" else colors.HexColor("#0f172a")),
                     ("FONTNAME", (0, 0), (-1, -1), "Helvetica-Bold"),
                     ("FONTSIZE", (0, 0), (-1, -1), 14),

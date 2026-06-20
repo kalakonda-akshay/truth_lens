@@ -10,6 +10,11 @@ class Settings(BaseSettings):
     database_url: str = Field("sqlite:///./truthlens.db", validation_alias="TRUTHLENS_DATABASE_URL")
     storage_dir: Path = Field(Path("./storage"), validation_alias="TRUTHLENS_STORAGE_DIR")
     allowed_origins: str = Field("http://localhost:3000", validation_alias="ALLOWED_ORIGINS")
+    sightengine_api_user: str = Field("", validation_alias="SIGHTENGINE_API_USER")
+    sightengine_api_secret: str = Field("", validation_alias="SIGHTENGINE_API_SECRET")
+    virustotal_api_key: str = Field("", validation_alias="VIRUSTOTAL_API_KEY")
+    resemble_api_key: str = Field("", validation_alias="RESEMBLE_API_KEY")
+    resemble_detect_url: str = Field("https://app.resemble.ai/api/v2/detect", validation_alias="RESEMBLE_DETECT_URL")
 
     model_config = SettingsConfigDict(
         env_file=".env",

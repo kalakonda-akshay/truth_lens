@@ -16,6 +16,7 @@ from app.config import get_settings
 from app.models import AnalysisReport, EvidenceItem, MetadataReport, ScoreCard, SuspiciousFrame
 from app.services.content_models import infer_audio_ai_probability, infer_image_ai_probability, infer_video_ai_probability
 from app.services.pretrained_models import infer_pretrained_audio, infer_pretrained_images
+from app.services.provider_clients import resemble_detect_audio, sightengine_frames, sightengine_image, virustotal_url
 from app.services.risk import calculate_scores, risk_level
 
 
@@ -254,32 +255,44 @@ def analyze_image(path: Path, report_id: str, metadata: MetadataReport) -> tuple
     has_camera_exif = bool(metadata.exif_data and metadata.camera_information != "Not available")
     content_model = infer_image_ai_probability(image, has_camera_exif)
     pretrained_model = infer_pretrained_images([Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))])
+    sightengine = sightengine_image(path)
     visual_score = int(np.clip(np.mean([value for key, value in metrics.items() if key != "faces_detected"]), 0, 100))
-    ai_probability = _fused_image_probability(
+    fallback_probability = _fused_image_probability(
         pretrained_model.probability if pretrained_model.available else 0,
         content_model.probability,
         visual_score,
         len([item for item in content_model.evidence if "EXIF absent" not in item and "Compression seam" not in item]),
         has_camera_exif,
     )
+    ai_probability = max(sightengine.ai_probability, sightengine.deepfake_probability) if sightengine.available else fallback_probability
 
     evidence: list[EvidenceItem] = []
     findings: list[str] = []
-    evidence.append(EvidenceItem(
-        label="Pretrained AI Image Detector",
-        detail=(
-            f"{pretrained_model.model_name} output: {pretrained_model.probability}% AI, label {pretrained_model.label}."
-            if pretrained_model.available
-            else f"{pretrained_model.model_name} unavailable; forensic content model used. {pretrained_model.error}"
-        ),
-        severity=risk_level(ai_probability),
-    ))
+    if sightengine.available:
+        for detail in sightengine.evidence:
+            evidence.append(EvidenceItem(label="Sightengine AI Image Detection API", detail=detail, severity=risk_level(ai_probability)))
+        findings.extend([item for item in sightengine.evidence if not item.endswith("0%.")])
+    else:
+        evidence.append(EvidenceItem(
+            label="Sightengine AI Image Detection API",
+            detail=f"Provider unavailable: {sightengine.error}",
+            severity="Low",
+        ))
+        evidence.append(EvidenceItem(
+            label="Pretrained AI Image Detector",
+            detail=(
+                f"{pretrained_model.model_name} output: {pretrained_model.probability}% AI, label {pretrained_model.label}."
+                if pretrained_model.available
+                else f"{pretrained_model.model_name} unavailable; forensic content model used. {pretrained_model.error}"
+            ),
+            severity=risk_level(ai_probability),
+        ))
     evidence.append(EvidenceItem(
         label="Image Forensic Content Model",
         detail=f"{content_model.label} probability: {content_model.probability}%.",
         severity=risk_level(content_model.probability),
     ))
-    if pretrained_model.available:
+    if not sightengine.available and pretrained_model.available:
         findings.append(f"Pretrained image detector probability: {pretrained_model.probability}% ({pretrained_model.label})")
     findings.extend(content_model.evidence)
     thresholds = {
@@ -306,7 +319,7 @@ def analyze_image(path: Path, report_id: str, metadata: MetadataReport) -> tuple
         findings.append("Editing software trace present")
 
     suspicious: list[SuspiciousFrame] = []
-    if evidence and max(visual_score, ai_probability) >= 35:
+    if evidence and visual_score >= 35:
         anomaly = cv2.normalize(np.abs(laplacian).astype(np.float32), None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
         _, mask = cv2.threshold(anomaly, int(np.percentile(anomaly, 92)), 255, cv2.THRESH_BINARY)
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -329,6 +342,10 @@ def analyze_image(path: Path, report_id: str, metadata: MetadataReport) -> tuple
         "resolution": f"{original.shape[1]}x{original.shape[0]}",
         "ai_model": content_model.label,
         "ai_model_probability": ai_probability,
+        "sightengine_available": sightengine.available,
+        "sightengine_ai_probability": sightengine.ai_probability,
+        "sightengine_deepfake_probability": sightengine.deepfake_probability,
+        "sightengine_error": sightengine.error,
         "pretrained_model": pretrained_model.model_name,
         "pretrained_model_available": pretrained_model.available,
         "pretrained_model_probability": pretrained_model.probability,
@@ -432,6 +449,8 @@ def analyze_video(path: Path, report_id: str, media_type: str) -> tuple[dict, li
     frame_scores: list[int] = []
     temporal_diffs: list[float] = []
     model_frames: list[Image.Image] = []
+    provider_frames: list[np.ndarray] = []
+    provider_timestamps: list[float] = []
     metric_max = {
         "texture_anomaly": 0,
         "edge_anomaly": 0,
@@ -449,6 +468,8 @@ def analyze_video(path: Path, report_id: str, media_type: str) -> tuple[dict, li
         metrics, normalized_frame = _video_frame_metrics(frame)
         if len(model_frames) < 8:
             model_frames.append(Image.fromarray(cv2.cvtColor(normalized_frame, cv2.COLOR_BGR2RGB)))
+            provider_frames.append(normalized_frame.copy())
+            provider_timestamps.append(round(index / fps, 2))
         score = int(metrics["frame_anomaly"])
         frame_scores.append(score)
         for key in metric_max:
@@ -492,12 +513,33 @@ def analyze_video(path: Path, report_id: str, media_type: str) -> tuple[dict, li
     classical_video_score = int(np.clip(max(max_frame_score * 0.72 + temporal_score * 0.28, average_top_score * 0.82), 0, 100))
     content_model = infer_video_ai_probability(frame_scores, temporal_score, metric_max)
     pretrained_model = infer_pretrained_images(model_frames)
-    video_score = _fused_probability(
+    sightengine = sightengine_frames(provider_frames)
+    fallback_score = _fused_probability(
         pretrained_model.probability if pretrained_model.available else 0,
         content_model.probability,
         classical_video_score,
         max_frame_score,
     )
+    video_score = max(sightengine.ai_probability, sightengine.deepfake_probability) if sightengine.available else fallback_score
+    if sightengine.available and video_score >= 35 and not suspicious and provider_frames:
+        raw_frames = sightengine.raw.get("frames", []) if isinstance(sightengine.raw, dict) else []
+        provider_scores = []
+        for raw in raw_frames:
+            type_block = (raw.get("type") or {}) if isinstance(raw, dict) else {}
+            provider_scores.append(max(int(round(float(type_block.get("ai_generated") or 0) * 100)), int(round(float(type_block.get("deepfake") or 0) * 100))))
+        selected = int(np.argmax(provider_scores)) if provider_scores else 0
+        selected = min(selected, len(provider_frames) - 1)
+        frame_name = f"{report_id}-sightengine-frame-{selected}.jpg"
+        annotated = provider_frames[selected].copy()
+        cv2.rectangle(annotated, (20, 20), (annotated.shape[1] - 20, annotated.shape[0] - 20), (0, 255, 255), 4)
+        cv2.imwrite(str(settings.storage_dir / "frames" / frame_name), annotated)
+        suspicious.append(SuspiciousFrame(timestamp_seconds=provider_timestamps[selected], frame_url=f"/frames/{frame_name}", reason="Sightengine flagged this sampled frame for AI/deepfake probability.", score=video_score))
+    if sightengine.available:
+        for detail in sightengine.evidence:
+            evidence.append(EvidenceItem(label="Sightengine Video Frame API", detail=detail, severity=risk_level(video_score)))
+        findings.extend(sightengine.evidence)
+    else:
+        evidence.append(EvidenceItem(label="Sightengine Video Frame API", detail=f"Provider unavailable: {sightengine.error}", severity="Low"))
     evidence.append(EvidenceItem(
         label="Pretrained AI Video-Frame Detector",
         detail=(
@@ -540,6 +582,10 @@ def analyze_video(path: Path, report_id: str, media_type: str) -> tuple[dict, li
         "deepfake_probability": video_score,
         "deepfake_detected": "YES" if video_score >= 65 else "NO",
         "classical_video_forensic_score": classical_video_score,
+        "sightengine_available": sightengine.available,
+        "sightengine_ai_probability": sightengine.ai_probability,
+        "sightengine_deepfake_probability": sightengine.deepfake_probability,
+        "sightengine_error": sightengine.error,
         "ai_model": content_model.label,
         "ai_model_probability": video_score,
         "pretrained_model": pretrained_model.model_name,
@@ -598,18 +644,24 @@ def analyze_audio_clone(path: Path, media_type: str, report_id: str | None = Non
             raise ValueError("empty audio")
         content_model = infer_audio_ai_probability(y, sr)
         pretrained_model = infer_pretrained_audio(y, sr)
-        confidence = _fused_probability(
+        resemble = resemble_detect_audio(path)
+        fallback_confidence = _fused_probability(
             pretrained_model.probability if pretrained_model.available else 0,
             content_model.probability,
         )
+        confidence = resemble.probability if resemble.available else fallback_confidence
         frames = [_write_audio_spectrogram(path, report_id, y, sr)] if report_id else []
         features = content_model.features
         return {
             "synthetic_voice_confidence": confidence,
             "voice_clone_probability": confidence,
             "voice_clone_detected": "YES" if confidence >= 65 else "NO",
-            "ai_model": pretrained_model.model_name if pretrained_model.available else content_model.label,
+            "ai_model": resemble.provider if resemble.available else pretrained_model.model_name if pretrained_model.available else content_model.label,
             "ai_model_probability": confidence,
+            "resemble_available": resemble.available,
+            "resemble_probability": resemble.probability,
+            "resemble_label": resemble.label,
+            "resemble_error": resemble.error,
             "pretrained_model": pretrained_model.model_name,
             "pretrained_model_available": pretrained_model.available,
             "pretrained_model_probability": pretrained_model.probability,
@@ -617,6 +669,10 @@ def analyze_audio_clone(path: Path, media_type: str, report_id: str | None = Non
             "pretrained_model_error": pretrained_model.error or "",
             "forensic_model_probability": content_model.probability,
             "model_evidence": (
+                resemble.evidence
+                if resemble.available
+                else [f"Resemble Detect unavailable: {resemble.error}"]
+            ) + (
                 [f"Pretrained voice detector probability: {pretrained_model.probability}% ({pretrained_model.label})"]
                 if pretrained_model.available
                 else [f"Pretrained voice detector unavailable: {pretrained_model.error}"]
@@ -676,7 +732,7 @@ def analyze_url_text(raw_url: str) -> AnalysisReport:
         score += 8
     if not indicators:
         indicators.append("No phishing URL indicators detected.")
-    score = int(np.clip(score, 0, 100))
+    heuristic_score = int(np.clip(score, 0, 100))
     domain_risk_score = int(np.clip(
         (25 if re.search(r"(paypa1|g00gle|micros0ft|amaz0n|appleid|secure-bank|faceb00k|whatsapp-login)", domain, re.I) else 0)
         + (18 if "-" in domain else 0)
@@ -687,16 +743,27 @@ def analyze_url_text(raw_url: str) -> AnalysisReport:
         0,
         100,
     ))
-    phishing_probability = int(np.clip(max(score, round(score * 0.72 + domain_risk_score * 0.28)), 0, 100))
+    vt_result = virustotal_url(raw_url)
+    if vt_result.available:
+        score = vt_result.threat_score
+        phishing_probability = vt_result.phishing_probability
+        domain_risk_score = max(domain_risk_score, vt_result.domain_risk_score)
+        vt_evidence = vt_result.evidence
+    else:
+        score = heuristic_score
+        phishing_probability = int(np.clip(max(score, round(score * 0.72 + domain_risk_score * 0.28)), 0, 100))
+        vt_evidence = [f"VirusTotal unavailable: {vt_result.error}"]
     level = risk_level(score)
     report_id = str(uuid.uuid4())
-    classification = threat_classification(score, "url")
+    classification = vt_result.classification if vt_result.available else threat_classification(score, "url")
+    evidence_items = [EvidenceItem(label="VirusTotal URL Intelligence", detail=item, severity=level) for item in vt_evidence]
+    evidence_items.extend(EvidenceItem(label="URL Indicator", detail=item, severity=level) for item in indicators if not item.startswith("No "))
     return AnalysisReport(
         id=report_id,
         filename=raw_url,
         media_type="url",
         uploaded_at=datetime.now(timezone.utc).isoformat(),
-        scores=ScoreCard(authenticity_score=100 - score, deepfake_probability=phishing_probability, risk_level=level, confidence_score=_model_confidence(score, len(indicators)), threat_score=score),
+        scores=ScoreCard(authenticity_score=0, deepfake_probability=0, risk_level=level, confidence_score=_model_confidence(score, len(indicators) + len(vt_evidence), vt_result.available), threat_score=score),
         metadata=_text_metadata("URL indicator", indicators),
         face_analysis={},
         lip_sync_analysis={},
@@ -707,22 +774,26 @@ def analyze_url_text(raw_url: str) -> AnalysisReport:
             "path": parsed.path,
             "indicators": indicators,
             "threat_score": score,
+            "heuristic_threat_score": heuristic_score,
             "phishing_probability": phishing_probability,
             "domain_risk_score": domain_risk_score,
             "threat_classification": classification,
+            "virustotal_available": vt_result.available,
+            "virustotal_error": vt_result.error,
+            "virustotal_evidence": vt_evidence,
             "credential_harvesting": any("Credential" in item for item in indicators),
             "redirect_risk": any("Redirect" in item or "redirection" in item for item in indicators),
             "typosquatting": any("typosquatting" in item.lower() for item in indicators),
         },
         suspicious_frames=[],
-        evidence=[EvidenceItem(label="URL Indicator", detail=item, severity=level) for item in indicators if not item.startswith("No ")],
+        evidence=evidence_items,
         verdict="Likely Phishing" if score >= 65 else "Suspicious URL" if score >= 35 else "No URL Threat Detected",
         ai_classification=ai_classification(0),
         threat_classification=classification,
-        model_confidence=_model_confidence(score, len(indicators)),
-        evidence_summary="; ".join([i for i in indicators if not i.startswith("No ")]) or "No URL threat evidence crossed threshold.",
-        analysis_summary=f"URL analysis measured {len([i for i in indicators if not i.startswith('No ')])} phishing indicator(s).",
-        key_findings=[i for i in indicators if not i.startswith("No ")],
+        model_confidence=_model_confidence(score, len(indicators) + len(vt_evidence), vt_result.available),
+        evidence_summary="; ".join([item.detail for item in evidence_items]) or "No URL threat evidence crossed threshold.",
+        analysis_summary=f"URL analysis used {'VirusTotal and local indicators' if vt_result.available else 'local indicators because VirusTotal is unavailable'}; measured threat score {score}%.",
+        key_findings=[item.detail for item in evidence_items],
         conclusion="Treat this URL as unsafe until verified." if score >= 35 else "No high-risk URL indicators were detected.",
         reasons_for_decision=indicators,
         recommendations=["Use official domains typed manually.", "Do not enter credentials on suspicious URLs.", "Report suspicious links to security staff."],
@@ -731,6 +802,7 @@ def analyze_url_text(raw_url: str) -> AnalysisReport:
 
 def analyze_email_text(raw_email: str) -> AnalysisReport:
     lowered = raw_email.lower()
+    urls = re.findall(r"https?://[^\s<>'\")]+", raw_email)
     checks = [
         ("Credential theft language detected.", ["password", "verify your account", "login immediately", "reset your account", "confirm your identity", "otp", "kyc"], 24),
         ("Urgency or threat pressure detected.", ["urgent", "suspended", "24 hours", "immediately", "final notice", "limited time", "act now"], 22),
@@ -757,29 +829,47 @@ def analyze_email_text(raw_email: str) -> AnalysisReport:
         score += 10
     if not indicators:
         indicators.append("No scam or phishing indicators detected.")
-    score = int(np.clip(score, 0, 100))
+    heuristic_score = int(np.clip(score, 0, 100))
+    vt_results = [virustotal_url(url) for url in urls[:5]]
+    vt_scores = [result.threat_score for result in vt_results if result.available]
+    vt_evidence = []
+    for url, result in zip(urls[:5], vt_results):
+        if result.available:
+            vt_evidence.extend([f"{url}: {item}" for item in result.evidence])
+        else:
+            vt_evidence.append(f"{url}: VirusTotal unavailable: {result.error}")
+    score = int(np.clip(max([heuristic_score] + vt_scores) if vt_scores else heuristic_score, 0, 100))
     level = risk_level(score)
     report_id = str(uuid.uuid4())
+    evidence_items = [EvidenceItem(label="Email Indicator", detail=item, severity=level) for item in indicators if not item.startswith("No ")]
+    evidence_items.extend(EvidenceItem(label="VirusTotal URL Intelligence", detail=item, severity=level) for item in vt_evidence)
     return AnalysisReport(
         id=report_id,
         filename="Pasted email / EML content",
         media_type="email",
         uploaded_at=datetime.now(timezone.utc).isoformat(),
-        scores=ScoreCard(authenticity_score=100 - score, deepfake_probability=0, risk_level=level, confidence_score=_model_confidence(score, len(indicators)), threat_score=score),
+        scores=ScoreCard(authenticity_score=0, deepfake_probability=0, risk_level=level, confidence_score=_model_confidence(score, len(indicators) + len(vt_evidence), any(result.available for result in vt_results) if urls else True), threat_score=score),
         metadata=_text_metadata("Email text / EML", indicators, len(raw_email.encode("utf-8"))),
         face_analysis={},
         lip_sync_analysis={},
         audio_clone_detection={},
-        email_analysis={"indicators": indicators, "highlight_terms": ["password", "urgent", "verify", "suspended", "invoice", "gift card"]},
+        email_analysis={
+            "indicators": indicators,
+            "embedded_urls": urls,
+            "heuristic_threat_score": heuristic_score,
+            "virustotal_urls_checked": len(vt_results),
+            "virustotal_evidence": vt_evidence,
+            "highlight_terms": ["password", "urgent", "verify", "suspended", "invoice", "gift card"],
+        },
         suspicious_frames=[],
-        evidence=[EvidenceItem(label="Email Indicator", detail=item, severity=level) for item in indicators if not item.startswith("No ")],
+        evidence=evidence_items,
         verdict="Likely Email Scam" if score >= 65 else "Suspicious Email" if score >= 35 else "No Email Threat Detected",
         ai_classification=ai_classification(0),
         threat_classification=threat_classification(score, "email"),
-        model_confidence=_model_confidence(score, len(indicators)),
-        evidence_summary="; ".join([i for i in indicators if not i.startswith("No ")]) or "No email threat evidence crossed threshold.",
-        analysis_summary=f"Email analysis measured {len([i for i in indicators if not i.startswith('No ')])} scam/phishing indicator(s).",
-        key_findings=[i for i in indicators if not i.startswith("No ")],
+        model_confidence=_model_confidence(score, len(indicators) + len(vt_evidence), any(result.available for result in vt_results) if urls else True),
+        evidence_summary="; ".join([item.detail for item in evidence_items]) or "No email threat evidence crossed threshold.",
+        analysis_summary=f"Email analysis measured {len([i for i in indicators if not i.startswith('No ')])} scam/phishing indicator(s) and checked {len(vt_results)} embedded URL(s).",
+        key_findings=[item.detail for item in evidence_items],
         conclusion="Treat this email as phishing until verified through another channel." if score >= 35 else "No high-risk email scam indicators were detected.",
         reasons_for_decision=indicators,
         recommendations=["Do not click links or open attachments in suspicious email.", "Verify the sender through a known trusted channel.", "Report suspected phishing to the security team."],
@@ -800,7 +890,8 @@ def analyze_upload(file_name: str, content_type: str | None, source: BinaryIO) -
     if media_type == "image":
         image_forensics, suspicious_frames, probability, evidence, findings = analyze_image(destination, report_id, metadata)
         level = risk_level(probability)
-        scores = ScoreCard(authenticity_score=100 - probability, deepfake_probability=probability, risk_level=level, confidence_score=_model_confidence(probability, len(evidence), bool(image_forensics.get("pretrained_model_available"))), threat_score=probability)
+        provider_available = bool(image_forensics.get("sightengine_available") or image_forensics.get("pretrained_model_available"))
+        scores = ScoreCard(authenticity_score=100 - probability, deepfake_probability=probability, risk_level=level, confidence_score=_model_confidence(probability, len(evidence), provider_available), threat_score=probability)
         face_analysis = {"frames_analyzed": 1, "suspicious_frames": len(suspicious_frames), "summary": "Still-image analysis completed using measured image statistics."}
         lip_sync = {"forensic_score": 0, "summary": "Not applicable."}
         audio_clone = {"synthetic_voice_confidence": 0, "voice_clone_probability": 0, "voice_clone_detected": "NO", "summary": "Not applicable."}

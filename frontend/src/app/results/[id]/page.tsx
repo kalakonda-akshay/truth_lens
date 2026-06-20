@@ -29,9 +29,9 @@ function riskTone(risk: string) {
 }
 
 function urlThreatTone(classification: string) {
-  if (classification === "MALICIOUS") return "bg-red-700 text-white";
-  if (classification === "LIKELY PHISHING") return "bg-red-600 text-white";
-  if (classification === "SUSPICIOUS") return "bg-orange-500 text-white";
+  if (classification === "MALICIOUS" || classification.includes("CRITICAL")) return "bg-red-700 text-white";
+  if (classification === "LIKELY PHISHING" || classification.includes("HIGH")) return "bg-red-600 text-white";
+  if (classification === "SUSPICIOUS" || classification.includes("MEDIUM")) return "bg-orange-500 text-white";
   return "bg-emerald-500 text-white";
 }
 
@@ -92,10 +92,15 @@ function ScoreCircle({ title, value, caption, color }: { title: string; value: n
 
 function TruthLensReport({ report }: { report: AnalysisReport }) {
   const isUrl = report.media_type === "url";
+  const isThreatText = report.media_type === "url" || report.media_type === "email";
   const urlThreatScore = Number(report.url_analysis.threat_score ?? report.scores.threat_score ?? 0);
   const phishingProbability = Number(report.url_analysis.phishing_probability ?? report.scores.deepfake_probability ?? report.scores.threat_score ?? 0);
   const domainRiskScore = Number(report.url_analysis.domain_risk_score ?? 0);
   const urlThreatClassification = String(report.url_analysis.threat_classification ?? report.threat_classification ?? "SAFE").toUpperCase();
+  const textThreatScore = isUrl ? urlThreatScore : Number(report.scores.threat_score ?? 0);
+  const textPhishingProbability = isUrl ? phishingProbability : Number(report.scores.threat_score ?? 0);
+  const textRiskScore = isUrl ? domainRiskScore : Number(report.scores.threat_score ?? 0);
+  const textThreatClassification = isUrl ? urlThreatClassification : String(report.threat_classification ?? "LOW THREAT").toUpperCase();
   const visualRows = report.media_type === "image"
     ? [
         ["Texture Consistency", String(report.image_forensics.texture_inconsistency ?? "Not triggered")],
@@ -116,6 +121,13 @@ function TruthLensReport({ report }: { report: AnalysisReport }) {
             ["Credential Harvesting", report.url_analysis.credential_harvesting ? "Detected" : "Not detected"],
             ["Redirect Risk", report.url_analysis.redirect_risk ? "Detected" : "Not detected"],
             ["Typosquatting", report.url_analysis.typosquatting ? "Detected" : "Not detected"],
+          ]
+      : report.media_type === "email"
+        ? [
+            ["Embedded URLs", String((report.email_analysis.embedded_urls as string[] | undefined)?.length ?? 0)],
+            ["VT URLs Checked", String(report.email_analysis.virustotal_urls_checked ?? 0)],
+            ["Heuristic Score", `${report.email_analysis.heuristic_threat_score ?? 0}%`],
+            ["Indicators", String((report.email_analysis.indicators as string[] | undefined)?.length ?? 0)],
           ]
       : [
           ["Frames Analyzed", String(report.face_analysis.frames_analyzed ?? 0)],
@@ -192,12 +204,12 @@ function TruthLensReport({ report }: { report: AnalysisReport }) {
               rows={[
                 ["Media Type Detected", report.media_type.toUpperCase()],
                 ["Analysis Performed", report.analysis_summary],
-                ...(isUrl
+                ...(isThreatText
                   ? [
-                      ["Threat Score", `${urlThreatScore}%`] as [string, string],
-                      ["Phishing Probability", `${phishingProbability}%`] as [string, string],
-                      ["Domain Risk Score", `${domainRiskScore}%`] as [string, string],
-                      ["Threat Classification", urlThreatClassification] as [string, string],
+                      ["Threat Score", `${textThreatScore}%`] as [string, string],
+                      ["Phishing Probability", `${textPhishingProbability}%`] as [string, string],
+                      [isUrl ? "Domain Risk Score" : "Email Risk Score", `${textRiskScore}%`] as [string, string],
+                      ["Threat Classification", textThreatClassification] as [string, string],
                     ]
                   : [
                       ["Overall Authenticity", `${report.scores.authenticity_score}%`] as [string, string],
@@ -210,18 +222,18 @@ function TruthLensReport({ report }: { report: AnalysisReport }) {
                 ...(report.media_type === "video" ? [["Deepfake Detection", report.deepfake_detected.toUpperCase()] as [string, string]] : []),
               ]}
             />
-            <div className={`mt-4 rounded-lg border px-4 py-3 text-center text-lg font-black ${isUrl ? urlThreatTone(urlThreatClassification) : classificationTone(report.ai_classification)}`}>
-              {isUrl ? `THREAT CLASSIFICATION: ${urlThreatClassification}` : `AI CLASSIFICATION: ${report.ai_classification.toUpperCase()}`}
+            <div className={`mt-4 rounded-lg border px-4 py-3 text-center text-lg font-black ${isThreatText ? urlThreatTone(textThreatClassification) : classificationTone(report.ai_classification)}`}>
+              {isThreatText ? `THREAT CLASSIFICATION: ${textThreatClassification}` : `AI CLASSIFICATION: ${report.ai_classification.toUpperCase()}`}
             </div>
           </Section>
         </div>
 
         <section className="grid grid-cols-3 rounded-xl border border-slate-300 bg-white p-4">
-          {isUrl ? (
+          {isThreatText ? (
             <>
-              <ScoreCircle title="Threat Score" value={urlThreatScore} caption={urlThreatClassification} color="#dc2626" />
-              <ScoreCircle title="Phishing Probability" value={phishingProbability} caption="URL Threat" color="#f97316" />
-              <ScoreCircle title="Domain Risk Score" value={domainRiskScore} caption={String(report.url_analysis.domain ?? "Domain")} color="#0ea5e9" />
+              <ScoreCircle title="Threat Score" value={textThreatScore} caption={textThreatClassification} color="#dc2626" />
+              <ScoreCircle title="Phishing Probability" value={textPhishingProbability} caption={isUrl ? "URL Threat" : "Email Threat"} color="#f97316" />
+              <ScoreCircle title={isUrl ? "Domain Risk Score" : "Email Risk Score"} value={textRiskScore} caption={isUrl ? String(report.url_analysis.domain ?? "Domain") : "Message"} color="#0ea5e9" />
             </>
           ) : (
             <>
@@ -229,7 +241,7 @@ function TruthLensReport({ report }: { report: AnalysisReport }) {
               <ScoreCircle title="AI Generated Probability" value={report.scores.deepfake_probability} caption={report.ai_classification} color="#dc2626" />
             </>
           )}
-          {!isUrl && <div className="flex flex-col items-center justify-center px-4">
+          {!isThreatText && <div className="flex flex-col items-center justify-center px-4">
             <h3 className="mb-6 text-center text-base font-black uppercase text-[#0b1b4f]">Risk Level</h3>
             <div className={`w-full rounded-xl p-8 text-center ${riskTone(report.scores.risk_level)}`}>
               <p className="text-4xl font-black">{report.scores.risk_level.toUpperCase()}</p>
@@ -250,10 +262,10 @@ function TruthLensReport({ report }: { report: AnalysisReport }) {
               ]}
             />
           </Section>
-          <Section title={isUrl ? "URL Threat Analysis" : "Visual Analysis"} index={4}>
+          <Section title={isThreatText ? (isUrl ? "URL Threat Analysis" : "Email Threat Analysis") : "Visual Analysis"} index={4}>
             <DetailRows rows={visualRows.slice(0, 5) as Array<[string, string]>} />
           </Section>
-          <Section title={isUrl ? "URL Evidence Detected" : "AI Artifact Detection"} index={5}>
+          <Section title={isThreatText ? "Threat Evidence Detected" : "AI Artifact Detection"} index={5}>
             <DetailRows rows={(artifactRows.length ? artifactRows.slice(0, 5) : [["Indicators", "No high-risk artifact indicators detected"]]) as Array<[string, string]>} />
           </Section>
         </div>
@@ -269,7 +281,7 @@ function TruthLensReport({ report }: { report: AnalysisReport }) {
                 <div className="mt-1 flex justify-between text-[11px] font-bold text-slate-700"><span>Low Suspicion</span><span>High Suspicion</span></div>
               </div>
             ) : (
-              <p className="text-sm text-slate-600">{isUrl ? "URL evidence is shown through the threat indicators and key findings." : "No heatmap, bounding box, suspicious region, spectrogram, or frame evidence crossed reporting threshold."}</p>
+              <p className="text-sm text-slate-600">{isThreatText ? "Threat evidence is shown through indicators and key findings." : "No heatmap, bounding box, suspicious region, spectrogram, or frame evidence crossed reporting threshold."}</p>
             )}
           </Section>
           <Section title="Key Findings" index={7}>
