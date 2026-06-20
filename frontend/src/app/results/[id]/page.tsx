@@ -15,7 +15,12 @@ function frameSource(frameUrl: string) {
 }
 
 function classificationTone(classification: string) {
+  if (classification === "ANALYSIS FAILED") return "bg-red-700 text-white border-red-500";
   if (classification === "AI Generated") return "bg-red-600 text-white border-red-400";
+  if (classification === "AI GENERATED") return "bg-red-600 text-white border-red-400";
+  if (classification === "LIKELY AI GENERATED") return "bg-orange-500 text-white border-orange-300";
+  if (classification === "SUSPICIOUS") return "bg-yellow-400 text-slate-950 border-yellow-200";
+  if (classification === "AUTHENTIC" || classification === "LIKELY AUTHENTIC") return "bg-emerald-500 text-white border-emerald-300";
   if (classification === "Likely AI Generated") return "bg-orange-500 text-white border-orange-300";
   if (classification === "Manipulated") return "bg-yellow-400 text-slate-950 border-yellow-200";
   if (classification === "Authentic") return "bg-emerald-500 text-white border-emerald-300";
@@ -204,6 +209,10 @@ function TruthLensReport({ report }: { report: AnalysisReport }) {
               rows={[
                 ["Media Type Detected", report.media_type.toUpperCase()],
                 ["Analysis Performed", report.analysis_summary],
+                ["Authenticity Verdict", report.authenticity_verdict],
+                ["Analysis Status", report.analysis_status.toUpperCase()],
+                ["Model Used", report.model_used],
+                ...(report.error_details ? [["Error Details", report.error_details] as [string, string]] : []),
                 ...(isThreatText
                   ? [
                       ["Threat Score", `${textThreatScore}%`] as [string, string],
@@ -222,7 +231,10 @@ function TruthLensReport({ report }: { report: AnalysisReport }) {
                 ...(report.media_type === "video" ? [["Deepfake Detection", report.deepfake_detected.toUpperCase()] as [string, string]] : []),
               ]}
             />
-            <div className={`mt-4 rounded-lg border px-4 py-3 text-center text-lg font-black ${isThreatText ? urlThreatTone(textThreatClassification) : classificationTone(report.ai_classification)}`}>
+            <div className={`mt-4 rounded-lg border px-4 py-3 text-center text-lg font-black ${classificationTone(report.authenticity_verdict)}`}>
+              AUTHENTICITY VERDICT: {report.authenticity_verdict.toUpperCase()}
+            </div>
+            <div className={`mt-3 rounded-lg border px-4 py-3 text-center text-sm font-black ${isThreatText ? urlThreatTone(textThreatClassification) : classificationTone(report.ai_classification)}`}>
               {isThreatText ? `THREAT CLASSIFICATION: ${textThreatClassification}` : `AI CLASSIFICATION: ${report.ai_classification.toUpperCase()}`}
             </div>
           </Section>

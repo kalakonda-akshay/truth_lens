@@ -52,6 +52,10 @@ class AnalysisReport(BaseModel):
     evidence: list[EvidenceItem]
     verdict: str = "Needs Review"
     ai_classification: str = "Unable To Determine"
+    authenticity_verdict: str = "ANALYSIS FAILED"
+    analysis_status: str = "failed"
+    model_used: str = "Not available"
+    error_details: str = ""
     threat_classification: str = "Low Threat"
     model_confidence: int = 0
     evidence_summary: str = "No evidence summary generated."

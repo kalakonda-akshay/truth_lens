@@ -42,6 +42,24 @@ def ai_classification(probability: int) -> str:
     return "Unable To Determine"
 
 
+def authenticity_verdict(probability: int, analysis_status: str = "completed") -> str:
+    if analysis_status != "completed":
+        return "ANALYSIS FAILED"
+    if probability >= 76:
+        return "AI GENERATED"
+    if probability >= 50:
+        return "LIKELY AI GENERATED"
+    if probability >= 25:
+        return "SUSPICIOUS"
+    if probability >= 11:
+        return "LIKELY AUTHENTIC"
+    return "AUTHENTIC"
+
+
+def _failed_score() -> ScoreCard:
+    return ScoreCard(authenticity_score=0, deepfake_probability=0, risk_level="Analysis Failed", confidence_score=0, threat_score=0)
+
+
 def threat_classification(score: int, media_type: str = "media") -> str:
     if media_type == "url":
         if score >= 85:
@@ -210,6 +228,21 @@ def analyze_image(path: Path, report_id: str, metadata: MetadataReport) -> tuple
 
     original = image.copy()
     height, width = image.shape[:2]
+    sightengine = sightengine_image(path)
+    if not sightengine.available:
+        return {
+            "summary": "Sightengine image analysis failed; no authenticity score was generated.",
+            "analysis_status": "failed",
+            "model_used": "Sightengine API",
+            "error_details": sightengine.error,
+            "resolution": f"{width}x{height}",
+            "sightengine_available": False,
+            "sightengine_error": sightengine.error,
+            "ai_model_probability": 0,
+            "heatmap_generated": False,
+        }, [], 0, [
+            EvidenceItem(label="Analysis Failed", detail=f"Sightengine image analysis unavailable: {sightengine.error}", severity="Critical")
+        ], [f"Analysis failed: {sightengine.error}"]
     scale = min(1.0, 1200 / max(width, height))
     if scale < 1:
         image = cv2.resize(image, (int(width * scale), int(height * scale)))
@@ -255,7 +288,6 @@ def analyze_image(path: Path, report_id: str, metadata: MetadataReport) -> tuple
     has_camera_exif = bool(metadata.exif_data and metadata.camera_information != "Not available")
     content_model = infer_image_ai_probability(image, has_camera_exif)
     pretrained_model = infer_pretrained_images([Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))])
-    sightengine = sightengine_image(path)
     visual_score = int(np.clip(np.mean([value for key, value in metrics.items() if key != "faces_detected"]), 0, 100))
     fallback_probability = _fused_image_probability(
         pretrained_model.probability if pretrained_model.available else 0,
@@ -338,6 +370,9 @@ def analyze_image(path: Path, report_id: str, metadata: MetadataReport) -> tuple
 
     metrics.update({
         "summary": "Image content model evaluated pixel texture, residual noise, frequency spectrum, compression seams, camera metadata support, and OpenCV visual anomalies.",
+        "analysis_status": "completed",
+        "model_used": "Sightengine API",
+        "error_details": "",
         "heatmap_generated": bool(suspicious),
         "resolution": f"{original.shape[1]}x{original.shape[0]}",
         "ai_model": content_model.label,
@@ -514,6 +549,25 @@ def analyze_video(path: Path, report_id: str, media_type: str) -> tuple[dict, li
     content_model = infer_video_ai_probability(frame_scores, temporal_score, metric_max)
     pretrained_model = infer_pretrained_images(model_frames)
     sightengine = sightengine_frames(provider_frames)
+    if not sightengine.available:
+        return {
+            "frames_analyzed": analyzed,
+            "suspicious_frames": 0,
+            "max_frame_anomaly": 0,
+            "average_top_frame_anomaly": 0,
+            "temporal_inconsistency": 0,
+            "video_forensic_score": 0,
+            "deepfake_probability": 0,
+            "deepfake_detected": "NO",
+            "analysis_status": "failed",
+            "model_used": "Sightengine Video Frame API",
+            "error_details": sightengine.error,
+            "sightengine_available": False,
+            "sightengine_error": sightengine.error,
+            "summary": "Sightengine video frame analysis failed; no deepfake score was generated.",
+        }, [], 0, [
+            EvidenceItem(label="Analysis Failed", detail=f"Sightengine video frame analysis unavailable: {sightengine.error}", severity="Critical")
+        ], [f"Analysis failed: {sightengine.error}"]
     fallback_score = _fused_probability(
         pretrained_model.probability if pretrained_model.available else 0,
         content_model.probability,
@@ -593,6 +647,9 @@ def analyze_video(path: Path, report_id: str, media_type: str) -> tuple[dict, li
         "pretrained_model_probability": pretrained_model.probability,
         "forensic_model_probability": content_model.probability,
         "summary": "Video content model evaluated extracted frame anomaly clusters, face-region consistency, compression seams, residual noise, and temporal consistency.",
+        "analysis_status": "completed",
+        "model_used": "Sightengine Video Frame API",
+        "error_details": "",
     }
     return summary, suspicious[:4], video_score, evidence, _dedupe(findings)
 
@@ -642,9 +699,27 @@ def analyze_audio_clone(path: Path, media_type: str, report_id: str | None = Non
             y = y[: sr * 45]
         if len(y) == 0:
             raise ValueError("empty audio")
+        resemble = resemble_detect_audio(path)
+        if not resemble.available:
+            frames = [_write_audio_spectrogram(path, report_id, y, sr)] if report_id else []
+            return {
+                "synthetic_voice_confidence": 0,
+                "voice_clone_probability": 0,
+                "voice_clone_detected": "NO",
+                "ai_model": "Resemble Detect",
+                "ai_model_probability": 0,
+                "resemble_available": False,
+                "resemble_probability": 0,
+                "resemble_label": resemble.label,
+                "resemble_error": resemble.error,
+                "analysis_status": "failed",
+                "model_used": "Resemble Detect",
+                "error_details": resemble.error,
+                "model_evidence": [f"Resemble Detect unavailable: {resemble.error}"],
+                "summary": "Resemble Detect analysis failed; no voice-clone score was generated.",
+            }, frames
         content_model = infer_audio_ai_probability(y, sr)
         pretrained_model = infer_pretrained_audio(y, sr)
-        resemble = resemble_detect_audio(path)
         fallback_confidence = _fused_probability(
             pretrained_model.probability if pretrained_model.available else 0,
             content_model.probability,
@@ -683,6 +758,9 @@ def analyze_audio_clone(path: Path, media_type: str, report_id: str | None = Non
             "rms_energy": round(float(features.get("rms_mean", 0)), 4),
             **{f"model_{key}": round(value, 4) if isinstance(value, float) else value for key, value in content_model.features.items()},
             "summary": "Audio content model evaluated spectrogram, MFCC variance, spectral flatness, frequency distribution, RMS dynamics, and pitch contour.",
+            "analysis_status": "completed",
+            "model_used": "Resemble Detect",
+            "error_details": "",
         }, frames
     except Exception as exc:
         return {"synthetic_voice_confidence": 0, "summary": f"Audio could not be decoded; no synthetic voice finding was generated. {exc}"}, []
@@ -744,15 +822,53 @@ def analyze_url_text(raw_url: str) -> AnalysisReport:
         100,
     ))
     vt_result = virustotal_url(raw_url)
-    if vt_result.available:
-        score = vt_result.threat_score
-        phishing_probability = vt_result.phishing_probability
-        domain_risk_score = max(domain_risk_score, vt_result.domain_risk_score)
-        vt_evidence = vt_result.evidence
-    else:
-        score = heuristic_score
-        phishing_probability = int(np.clip(max(score, round(score * 0.72 + domain_risk_score * 0.28)), 0, 100))
-        vt_evidence = [f"VirusTotal unavailable: {vt_result.error}"]
+    if not vt_result.available:
+        report_id = str(uuid.uuid4())
+        return AnalysisReport(
+            id=report_id,
+            filename=raw_url,
+            media_type="url",
+            uploaded_at=datetime.now(timezone.utc).isoformat(),
+            scores=_failed_score(),
+            metadata=_text_metadata("URL indicator", indicators),
+            face_analysis={},
+            lip_sync_analysis={},
+            audio_clone_detection={},
+            url_analysis={
+                "domain": domain,
+                "scheme": parsed.scheme,
+                "path": parsed.path,
+                "indicators": indicators,
+                "threat_score": 0,
+                "heuristic_threat_score": heuristic_score,
+                "phishing_probability": 0,
+                "domain_risk_score": 0,
+                "threat_classification": "ANALYSIS FAILED",
+                "virustotal_available": False,
+                "virustotal_error": vt_result.error,
+                "virustotal_evidence": [f"VirusTotal unavailable: {vt_result.error}"],
+            },
+            suspicious_frames=[],
+            evidence=[EvidenceItem(label="Analysis Failed", detail=f"VirusTotal URL analysis unavailable: {vt_result.error}", severity="Critical")],
+            verdict="Analysis Failed",
+            ai_classification="Unable To Determine",
+            authenticity_verdict="ANALYSIS FAILED",
+            analysis_status="failed",
+            model_used="VirusTotal API",
+            error_details=vt_result.error,
+            threat_classification="ANALYSIS FAILED",
+            model_confidence=0,
+            evidence_summary=f"VirusTotal URL analysis unavailable: {vt_result.error}",
+            analysis_summary="URL analysis failed because VirusTotal did not return a usable result.",
+            key_findings=[f"Analysis failed: {vt_result.error}"],
+            conclusion="TruthLens cannot determine URL safety because the required VirusTotal analysis failed.",
+            reasons_for_decision=[f"Analysis failed: {vt_result.error}"],
+            recommendations=["Do not trust or share this URL until VirusTotal analysis is available.", "Verify the destination through an official source."],
+        )
+    score = vt_result.threat_score
+    phishing_probability = vt_result.phishing_probability
+    domain_risk_score = max(domain_risk_score, vt_result.domain_risk_score)
+    vt_evidence = vt_result.evidence
     level = risk_level(score)
     report_id = str(uuid.uuid4())
     classification = vt_result.classification if vt_result.available else threat_classification(score, "url")
@@ -789,6 +905,10 @@ def analyze_url_text(raw_url: str) -> AnalysisReport:
         evidence=evidence_items,
         verdict="Likely Phishing" if score >= 65 else "Suspicious URL" if score >= 35 else "No URL Threat Detected",
         ai_classification="Unable To Determine",
+        authenticity_verdict=authenticity_verdict(score, "completed"),
+        analysis_status="completed",
+        model_used="VirusTotal API",
+        error_details="",
         threat_classification=classification,
         model_confidence=_model_confidence(score, len(indicators) + len(vt_evidence), vt_result.available),
         evidence_summary="; ".join([item.detail for item in evidence_items]) or "No URL threat evidence crossed threshold.",
@@ -831,6 +951,45 @@ def analyze_email_text(raw_email: str) -> AnalysisReport:
         indicators.append("No scam or phishing indicators detected.")
     heuristic_score = int(np.clip(score, 0, 100))
     vt_results = [virustotal_url(url) for url in urls[:5]]
+    failed_vt = [result for result in vt_results if not result.available]
+    if failed_vt:
+        error_detail = "; ".join(result.error for result in failed_vt if result.error) or "VirusTotal URL checks failed."
+        report_id = str(uuid.uuid4())
+        return AnalysisReport(
+            id=report_id,
+            filename="Pasted email / EML content",
+            media_type="email",
+            uploaded_at=datetime.now(timezone.utc).isoformat(),
+            scores=_failed_score(),
+            metadata=_text_metadata("Email text / EML", indicators, len(raw_email.encode("utf-8"))),
+            face_analysis={},
+            lip_sync_analysis={},
+            audio_clone_detection={},
+            email_analysis={
+                "indicators": indicators,
+                "embedded_urls": urls,
+                "heuristic_threat_score": heuristic_score,
+                "virustotal_urls_checked": len(vt_results),
+                "virustotal_evidence": [f"VirusTotal unavailable: {error_detail}"],
+                "highlight_terms": ["password", "urgent", "verify", "suspended", "invoice", "gift card"],
+            },
+            suspicious_frames=[],
+            evidence=[EvidenceItem(label="Analysis Failed", detail=f"VirusTotal email URL check unavailable: {error_detail}", severity="Critical")],
+            verdict="Analysis Failed",
+            ai_classification="Unable To Determine",
+            authenticity_verdict="ANALYSIS FAILED",
+            analysis_status="failed",
+            model_used="Email Analysis Engine + VirusTotal API",
+            error_details=error_detail,
+            threat_classification="ANALYSIS FAILED",
+            model_confidence=0,
+            evidence_summary=f"VirusTotal email URL check unavailable: {error_detail}",
+            analysis_summary="Email analysis failed because embedded URL intelligence did not return a usable result.",
+            key_findings=[f"Analysis failed: {error_detail}"],
+            conclusion="TruthLens cannot determine email safety because the required URL intelligence check failed.",
+            reasons_for_decision=[f"Analysis failed: {error_detail}"],
+            recommendations=["Do not click links or open attachments until URL intelligence is available.", "Verify the sender through a known trusted channel."],
+        )
     vt_scores = [result.threat_score for result in vt_results if result.available]
     vt_evidence = []
     for url, result in zip(urls[:5], vt_results):
@@ -865,6 +1024,10 @@ def analyze_email_text(raw_email: str) -> AnalysisReport:
         evidence=evidence_items,
         verdict="Likely Email Scam" if score >= 65 else "Suspicious Email" if score >= 35 else "No Email Threat Detected",
         ai_classification="Unable To Determine",
+        authenticity_verdict=authenticity_verdict(score, "completed"),
+        analysis_status="completed",
+        model_used="Email Analysis Engine + VirusTotal API" if vt_results else "Email Analysis Engine",
+        error_details="",
         threat_classification=threat_classification(score, "email"),
         model_confidence=_model_confidence(score, len(indicators) + len(vt_evidence), any(result.available for result in vt_results) if urls else True),
         evidence_summary="; ".join([item.detail for item in evidence_items]) or "No email threat evidence crossed threshold.",
@@ -889,13 +1052,19 @@ def analyze_upload(file_name: str, content_type: str | None, source: BinaryIO) -
     image_forensics: dict = {}
     if media_type == "image":
         image_forensics, suspicious_frames, probability, evidence, findings = analyze_image(destination, report_id, metadata)
-        level = risk_level(probability)
-        provider_available = bool(image_forensics.get("sightengine_available") or image_forensics.get("pretrained_model_available"))
-        scores = ScoreCard(authenticity_score=100 - probability, deepfake_probability=probability, risk_level=level, confidence_score=_model_confidence(probability, len(evidence), provider_available), threat_score=probability)
+        analysis_status = str(image_forensics.get("analysis_status", "completed"))
+        model_used = str(image_forensics.get("model_used", "Sightengine API"))
+        error_details = str(image_forensics.get("error_details", ""))
+        if analysis_status != "completed":
+            scores = _failed_score()
+        else:
+            level = risk_level(probability)
+            provider_available = bool(image_forensics.get("sightengine_available"))
+            scores = ScoreCard(authenticity_score=100 - probability, deepfake_probability=probability, risk_level=level, confidence_score=_model_confidence(probability, len(evidence), provider_available), threat_score=probability)
         face_analysis = {"frames_analyzed": 1, "suspicious_frames": len(suspicious_frames), "summary": "Still-image analysis completed using measured image statistics."}
         lip_sync = {"forensic_score": 0, "summary": "Not applicable."}
         audio_clone = {"synthetic_voice_confidence": 0, "voice_clone_probability": 0, "voice_clone_detected": "NO", "summary": "Not applicable."}
-        verdict = "Likely AI Generated or Manipulated" if probability >= 65 else "Review Recommended" if probability >= 35 else "No Strong Image Manipulation Detected"
+        verdict = "Analysis Failed" if analysis_status != "completed" else "Likely AI Generated or Manipulated" if probability >= 65 else "Review Recommended" if probability >= 35 else "No Strong Image Manipulation Detected"
         key_findings = findings
     else:
         if media_type == "video":
@@ -919,6 +1088,18 @@ def analyze_upload(file_name: str, content_type: str | None, source: BinaryIO) -
         lip_sync = analyze_lip_sync(destination, media_type)
         audio_clone, audio_frames = analyze_audio_clone(destination, media_type, report_id)
         suspicious_frames = suspicious_frames + audio_frames
+        if media_type == "video":
+            analysis_status = str(face_analysis.get("analysis_status", "completed"))
+            model_used = str(face_analysis.get("model_used", "Sightengine Video Frame API"))
+            error_details = str(face_analysis.get("error_details", ""))
+        elif media_type == "audio":
+            analysis_status = str(audio_clone.get("analysis_status", "completed"))
+            model_used = str(audio_clone.get("model_used", "Resemble Detect"))
+            error_details = str(audio_clone.get("error_details", ""))
+        else:
+            analysis_status = "failed"
+            model_used = "Unsupported media"
+            error_details = "Unsupported media type for TruthLens analysis."
         audio_evidence = []
         audio_findings = []
         if media_type == "audio" and audio_clone.get("synthetic_voice_confidence", 0) >= 0:
@@ -929,18 +1110,24 @@ def analyze_upload(file_name: str, content_type: str | None, source: BinaryIO) -
                 severity=risk_level(audio_score),
             ))
             audio_findings.extend(str(item) for item in audio_clone.get("model_evidence", []))
-        scores, evidence = calculate_scores(
-            tampering_count=len([i for i in metadata.tampering_indicators if not i.startswith("No ")]),
-            suspicious_frame_score=visual_score,
-            lip_sync_score=lip_sync["forensic_score"],
-            audio_clone_confidence=audio_clone["synthetic_voice_confidence"],
-        )
-        scores.confidence_score = _model_confidence(scores.deepfake_probability, len(video_evidence) + len(audio_evidence), True)
-        primary_evidence = video_evidence + audio_evidence
-        evidence = primary_evidence + [item for item in evidence if item.detail not in {existing.detail for existing in primary_evidence}]
+        if analysis_status != "completed":
+            scores = _failed_score()
+            evidence = video_evidence + audio_evidence
+            if not evidence:
+                evidence = [EvidenceItem(label="Analysis Failed", detail=error_details or "Required provider analysis failed.", severity="Critical")]
+        else:
+            scores, evidence = calculate_scores(
+                tampering_count=len([i for i in metadata.tampering_indicators if not i.startswith("No ")]),
+                suspicious_frame_score=visual_score,
+                lip_sync_score=lip_sync["forensic_score"],
+                audio_clone_confidence=audio_clone["synthetic_voice_confidence"],
+            )
+            scores.confidence_score = _model_confidence(scores.deepfake_probability, len(video_evidence) + len(audio_evidence), True)
+            primary_evidence = video_evidence + audio_evidence
+            evidence = primary_evidence + [item for item in evidence if item.detail not in {existing.detail for existing in primary_evidence}]
         if not evidence and any(not item.startswith("No ") for item in metadata.tampering_indicators):
             evidence.append(EvidenceItem(label="Metadata Indicator", detail=", ".join(metadata.tampering_indicators), severity=scores.risk_level))
-        verdict = "Likely Synthetic or Manipulated" if scores.threat_score >= 65 else "Review Recommended" if scores.threat_score >= 35 else "No Strong Synthetic Indicators Detected"
+        verdict = "Analysis Failed" if analysis_status != "completed" else "Likely Synthetic or Manipulated" if scores.threat_score >= 65 else "Review Recommended" if scores.threat_score >= 35 else "No Strong Synthetic Indicators Detected"
         key_findings = []
         seen_findings: set[str] = set()
         for finding in video_findings + audio_findings + [item.detail for item in evidence]:
@@ -949,7 +1136,9 @@ def analyze_upload(file_name: str, content_type: str | None, source: BinaryIO) -
                 seen_findings.add(signature)
                 key_findings.append(finding)
 
-    if not key_findings:
+    if not key_findings and analysis_status != "completed":
+        key_findings = [f"Analysis failed: {error_details or 'Required provider analysis did not complete.'}"]
+    elif not key_findings:
         key_findings = ["No high-risk forensic indicators were detected by the available analysis modules."]
     evidence_summary = "; ".join([item.detail for item in evidence[:5]]) if evidence else "No evidence item crossed the reporting threshold."
     voice_clone_detected = str(audio_clone.get("voice_clone_detected", "NO"))
@@ -968,15 +1157,27 @@ def analyze_upload(file_name: str, content_type: str | None, source: BinaryIO) -
         suspicious_frames=suspicious_frames,
         evidence=evidence,
         verdict=verdict,
-        ai_classification=ai_classification(scores.deepfake_probability),
-        threat_classification=threat_classification(scores.threat_score, media_type),
+        ai_classification="Unable To Determine" if analysis_status != "completed" else ai_classification(scores.deepfake_probability),
+        authenticity_verdict=authenticity_verdict(scores.deepfake_probability, analysis_status),
+        analysis_status=analysis_status,
+        model_used=model_used,
+        error_details=error_details,
+        threat_classification="ANALYSIS FAILED" if analysis_status != "completed" else threat_classification(scores.threat_score, media_type),
         model_confidence=scores.confidence_score,
         evidence_summary=evidence_summary,
         voice_clone_detected=voice_clone_detected,
         deepfake_detected=deepfake_detected,
-        analysis_summary=f"{media_type.title()} analysis completed using measured forensic indicators only.",
+        analysis_summary=(
+            f"{media_type.title()} analysis failed because {model_used} did not return a usable result."
+            if analysis_status != "completed"
+            else f"{media_type.title()} analysis completed using {model_used} provider results and measured forensic evidence."
+        ),
         key_findings=key_findings,
-        conclusion="High-risk indicators were detected; human verification is recommended before trust or sharing." if scores.threat_score >= 35 else "No high-risk indicators were detected; normal source verification is still recommended.",
+        conclusion=(
+            "TruthLens cannot determine authenticity because the required provider analysis failed."
+            if analysis_status != "completed"
+            else "High-risk indicators were detected; human verification is recommended before trust or sharing." if scores.threat_score >= 35 else "No high-risk indicators were detected; normal source verification is still recommended."
+        ),
         reasons_for_decision=key_findings,
         recommendations=DISCLAIMER_RECOMMENDATIONS,
     )

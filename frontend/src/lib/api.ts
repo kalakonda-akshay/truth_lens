@@ -50,6 +50,10 @@ export type AnalysisReport = {
   }>;
   verdict: string;
   ai_classification: "AI Generated" | "Likely AI Generated" | "Manipulated" | "Authentic" | "Unable To Determine" | string;
+  authenticity_verdict: "AUTHENTIC" | "LIKELY AUTHENTIC" | "SUSPICIOUS" | "LIKELY AI GENERATED" | "AI GENERATED" | "ANALYSIS FAILED" | string;
+  analysis_status: "completed" | "failed" | string;
+  model_used: string;
+  error_details: string;
   threat_classification: string;
   model_confidence: number;
   evidence_summary: string;
@@ -81,6 +85,10 @@ export function normalizeReport(report: AnalysisReport): AnalysisReport {
     email_analysis: report.email_analysis ?? {},
     verdict: report.verdict ?? (report.scores.deepfake_probability >= 70 ? "Likely Synthetic" : "Needs Verification"),
     ai_classification: report.ai_classification ?? classifyAiProbability(report.scores.deepfake_probability),
+    authenticity_verdict: report.authenticity_verdict ?? (report.analysis_status === "failed" ? "ANALYSIS FAILED" : verdictFromProbability(report.scores.deepfake_probability)),
+    analysis_status: report.analysis_status ?? "completed",
+    model_used: report.model_used ?? "TruthLens Analysis Engine",
+    error_details: report.error_details ?? "",
     threat_classification: report.threat_classification ?? `${report.scores.risk_level} Threat`,
     model_confidence: report.model_confidence ?? report.scores.confidence_score ?? 0,
     evidence_summary: report.evidence_summary ?? report.evidence.map((item) => item.detail).join("; "),
@@ -121,6 +129,14 @@ export async function fetchTextAnalysis(kind: "url" | "email", content: string):
     }
   }
   throw new Error("Unable to analyze text input");
+}
+
+export function verdictFromProbability(probability: number) {
+  if (probability >= 76) return "AI GENERATED";
+  if (probability >= 50) return "LIKELY AI GENERATED";
+  if (probability >= 25) return "SUSPICIOUS";
+  if (probability >= 11) return "LIKELY AUTHENTIC";
+  return "AUTHENTIC";
 }
 
 export async function fetchReport(id: string): Promise<AnalysisReport> {

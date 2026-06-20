@@ -110,6 +110,16 @@ def _score_cards(report: AnalysisReport) -> Table:
 
 
 def _classification_color(classification: str) -> str:
+    if classification == "ANALYSIS FAILED":
+        return "#991b1b"
+    if classification in {"AI GENERATED", "AI Generated"}:
+        return "#dc2626"
+    if classification in {"LIKELY AI GENERATED", "Likely AI Generated"}:
+        return "#f97316"
+    if classification == "SUSPICIOUS":
+        return "#facc15"
+    if classification in {"AUTHENTIC", "LIKELY AUTHENTIC"}:
+        return "#059669"
     if classification == "AI Generated":
         return "#dc2626"
     if classification == "Likely AI Generated":
@@ -200,6 +210,10 @@ def build_pdf(report: AnalysisReport) -> bytes:
             [
                 ["Media Type Detected", report.media_type.title()],
                 ["Analysis Performed", report.analysis_summary],
+                ["Authenticity Verdict", report.authenticity_verdict],
+                ["Analysis Status", report.analysis_status.upper()],
+                ["Model Used", report.model_used],
+                *([["Error Details", report.error_details]] if report.error_details else []),
                 *(
                     [
                         ["Threat Score", f"{report.url_analysis.get('threat_score', report.scores.threat_score)}%"],
@@ -226,16 +240,16 @@ def build_pdf(report: AnalysisReport) -> bytes:
         Spacer(1, 8),
         Table(
             [[
-                "THREAT CLASSIFICATION" if report.media_type == "url" else "AI CLASSIFICATION",
-                str(report.url_analysis.get("threat_classification", report.threat_classification)).upper() if report.media_type == "url" else report.ai_classification.upper(),
+                "AUTHENTICITY VERDICT",
+                report.authenticity_verdict.upper(),
             ]],
             colWidths=[2.25 * inch, 4.65 * inch],
             style=TableStyle(
                 [
                     ("BACKGROUND", (0, 0), (0, 0), colors.HexColor("#031225")),
                     ("TEXTCOLOR", (0, 0), (0, 0), colors.white),
-                    ("BACKGROUND", (1, 0), (1, 0), colors.HexColor("#dc2626" if report.media_type in {"url", "email"} and report.scores.threat_score >= 65 else _classification_color(report.ai_classification))),
-                    ("TEXTCOLOR", (1, 0), (1, 0), colors.white if report.ai_classification != "Manipulated" or report.media_type == "url" else colors.HexColor("#0f172a")),
+                    ("BACKGROUND", (1, 0), (1, 0), colors.HexColor(_classification_color(report.authenticity_verdict))),
+                    ("TEXTCOLOR", (1, 0), (1, 0), colors.white if report.authenticity_verdict != "SUSPICIOUS" else colors.HexColor("#0f172a")),
                     ("FONTNAME", (0, 0), (-1, -1), "Helvetica-Bold"),
                     ("FONTSIZE", (0, 0), (-1, -1), 14),
                     ("ALIGN", (0, 0), (-1, -1), "CENTER"),
@@ -249,6 +263,10 @@ def build_pdf(report: AnalysisReport) -> bytes:
             "MODEL-BACKED DECISION",
             [
                 ["Threat Classification", report.threat_classification],
+                ["Authenticity Verdict", report.authenticity_verdict],
+                ["Analysis Status", report.analysis_status.upper()],
+                ["Model Used", report.model_used],
+                *([["Error Details", report.error_details]] if report.error_details else []),
                 ["Model Confidence", f"{report.model_confidence}%"],
                 ["Voice Clone Detected", report.voice_clone_detected],
                 ["Deepfake Detection", report.deepfake_detected],

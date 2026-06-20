@@ -8,7 +8,7 @@ from app.services.content_models import (
     infer_image_ai_probability,
     infer_video_ai_probability,
 )
-from app.services.analyzer import _fused_image_probability
+from app.services.analyzer import _fused_image_probability, authenticity_verdict
 
 
 class ContentModelTests(unittest.TestCase):
@@ -39,6 +39,14 @@ class ContentModelTests(unittest.TestCase):
         )
 
         self.assertLess(fused, 35)
+
+    def test_authenticity_verdict_fails_closed(self):
+        self.assertEqual(authenticity_verdict(0, "failed"), "ANALYSIS FAILED")
+        self.assertEqual(authenticity_verdict(8, "completed"), "AUTHENTIC")
+        self.assertEqual(authenticity_verdict(22, "completed"), "LIKELY AUTHENTIC")
+        self.assertEqual(authenticity_verdict(40, "completed"), "SUSPICIOUS")
+        self.assertEqual(authenticity_verdict(66, "completed"), "LIKELY AI GENERATED")
+        self.assertEqual(authenticity_verdict(92, "completed"), "AI GENERATED")
 
     def test_audio_scores_separate_dynamic_and_uniform_voice_patterns(self):
         sr = 16000
