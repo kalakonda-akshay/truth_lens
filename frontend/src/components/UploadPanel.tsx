@@ -3,7 +3,7 @@
 import { useCallback, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { CloudUpload, FileAudio, FileImage, FileText, FileVideo, Link as LinkIcon, ShieldCheck } from "lucide-react";
-import { backendCandidates, fetchTextAnalysis, normalizeReport } from "@/lib/api";
+import { backendCandidates, fetchTextAnalysis, normalizeReport, storedAuthToken } from "@/lib/api";
 import { recordScan } from "@/lib/scanStats";
 
 const analysisModes = [
@@ -22,8 +22,10 @@ function detectMediaType(file: File) {
   return "";
 }
 
-export function UploadPanel() {
-  const [mode, setMode] = useState<"image" | "video" | "audio" | "url" | "email">("image");
+type AnalysisMode = "image" | "video" | "audio" | "url" | "email";
+
+export function UploadPanel({ initialMode = "image", showModeSelector = true }: { initialMode?: AnalysisMode; showModeSelector?: boolean }) {
+  const [mode, setMode] = useState<AnalysisMode>(initialMode);
   const [file, setFile] = useState<File | null>(null);
   const [textInput, setTextInput] = useState("");
   const [dragging, setDragging] = useState(false);
@@ -35,8 +37,8 @@ export function UploadPanel() {
   const detectedType = file ? detectMediaType(file) : "";
   const accepts = {
     image: "image/jpeg,image/png,image/webp",
-    video: "video/mp4,video/quicktime,video/x-msvideo,video/*",
-    audio: "audio/mpeg,audio/wav,audio/mp4,audio/*",
+    video: ".mp4,.mov,.avi,.mkv,.webm,video/mp4,video/quicktime,video/x-msvideo,video/webm",
+    audio: ".mp3,.wav,.m4a,.aac,.flac,audio/mpeg,audio/wav,audio/mp4,audio/aac,audio/flac",
     url: "",
     email: ".eml,text/plain",
   };
@@ -123,6 +125,7 @@ export function UploadPanel() {
           const response = await fetch(endpoint, {
             method: "POST",
             body: form,
+            headers: storedAuthToken() ? { Authorization: `Bearer ${storedAuthToken()}` } : {},
             signal: controller.signal,
           });
           if (response.ok) {
@@ -168,7 +171,7 @@ export function UploadPanel() {
           </div>
         </div>
 
-        <div className="mb-5 grid gap-3 sm:grid-cols-5">
+        {showModeSelector && <div className="mb-5 grid gap-3 sm:grid-cols-5">
           {analysisModes.map(({ key, label, detail, Icon }) => (
             <button
               key={key}
@@ -188,7 +191,7 @@ export function UploadPanel() {
               <p className="mt-1 text-[11px] font-medium text-slate-500">{detail}</p>
             </button>
           ))}
-        </div>
+        </div>}
 
         {mode === "url" || mode === "email" ? (
           <div className="rounded-xl border border-slate-200 bg-slate-50 p-5">

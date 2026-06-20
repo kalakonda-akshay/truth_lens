@@ -14,7 +14,10 @@ export async function POST(request: Request, context: { params: Promise<{ kind: 
     const body = await request.text();
     const response = await fetch(backendUrl(`/analyze/${kind}`), {
       method: "POST",
-      headers: { "content-type": request.headers.get("content-type") ?? "application/json" },
+      headers: {
+        "content-type": request.headers.get("content-type") ?? "application/json",
+        ...(request.headers.get("authorization") ? { authorization: request.headers.get("authorization")! } : {}),
+      },
       body,
     });
     return proxyResponse(response);

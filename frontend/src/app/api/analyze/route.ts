@@ -9,6 +9,7 @@ export async function POST(request: Request) {
     const response = await fetch(backendUrl("/analyze"), {
       method: "POST",
       body: form,
+      headers: request.headers.get("authorization") ? { authorization: request.headers.get("authorization")! } : {},
     });
     return proxyResponse(response);
   } catch (error) {

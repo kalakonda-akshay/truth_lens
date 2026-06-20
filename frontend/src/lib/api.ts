@@ -1,5 +1,11 @@
 export const API_URL = (process.env.NEXT_PUBLIC_API_URL ?? "").replace(/\/$/, "");
-export const API_PROXY_URL = "/api";
+export const BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
+export const API_PROXY_URL = `${BASE_PATH}/api`;
+
+export function storedAuthToken() {
+  if (typeof window === "undefined") return "";
+  return localStorage.getItem("truthlens:token") ?? "";
+}
 
 export function backendCandidates(path: string) {
   const normalizedPath = path.startsWith("/") ? path : `/${path}`;
@@ -118,7 +124,10 @@ export async function fetchTextAnalysis(kind: "url" | "email", content: string):
     try {
       const response = await fetch(endpoint, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(storedAuthToken() ? { Authorization: `Bearer ${storedAuthToken()}` } : {}),
+        },
         body: JSON.stringify({ content }),
       });
       if (response.ok) {
@@ -142,7 +151,10 @@ export function verdictFromProbability(probability: number) {
 export async function fetchReport(id: string): Promise<AnalysisReport> {
   for (const endpoint of backendCandidates(`/reports/${id}`)) {
     try {
-      const response = await fetch(endpoint, { cache: "no-store" });
+      const response = await fetch(endpoint, {
+        cache: "no-store",
+        headers: storedAuthToken() ? { Authorization: `Bearer ${storedAuthToken()}` } : {},
+      });
       if (response.ok) {
         return normalizeReport(await response.json());
       }

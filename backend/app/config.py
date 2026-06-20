@@ -13,6 +13,8 @@ class Settings(BaseSettings):
     sightengine_api_user: str = Field("", validation_alias="SIGHTENGINE_API_USER")
     sightengine_api_secret: str = Field("", validation_alias="SIGHTENGINE_API_SECRET")
     reality_defender_api_key: str = Field("", validation_alias="REALITY_DEFENDER_API_KEY")
+    auth_secret: str = Field("change-me-in-production", validation_alias="TRUTHLENS_AUTH_SECRET")
+    google_client_id: str = Field("", validation_alias="GOOGLE_CLIENT_ID")
 
     model_config = SettingsConfigDict(
         env_file=".env",

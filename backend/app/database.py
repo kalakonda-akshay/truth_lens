@@ -29,6 +29,29 @@ def init_db() -> None:
     with db_connection() as conn:
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS users (
+                id TEXT PRIMARY KEY,
+                email TEXT UNIQUE NOT NULL,
+                name TEXT NOT NULL,
+                password_hash TEXT,
+                avatar_url TEXT NOT NULL DEFAULT '',
+                provider TEXT NOT NULL DEFAULT 'email',
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sessions (
+                token_hash TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                FOREIGN KEY(user_id) REFERENCES users(id)
+            )
+            """
+        )
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS analyses (
                 id TEXT PRIMARY KEY,
                 filename TEXT NOT NULL,
@@ -38,3 +61,6 @@ def init_db() -> None:
             )
             """
         )
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(analyses)").fetchall()}
+        if "user_id" not in columns:
+            conn.execute("ALTER TABLE analyses ADD COLUMN user_id TEXT")

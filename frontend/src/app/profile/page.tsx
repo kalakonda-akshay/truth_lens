@@ -1,0 +1,7 @@
+"use client";
+import { AppShell } from "@/components/AppShell";
+import { useAuth } from "@/lib/auth";
+export default function ProfilePage() {
+  const { user } = useAuth();
+  return <AppShell title="Analyst Profile" subtitle="Identity details associated with your TruthLens investigations."><section className="max-w-2xl rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"><div className="flex items-center gap-5">{user?.avatar_url ? <div role="img" aria-label={`${user.name} avatar`} className="h-20 w-20 rounded-full bg-cover bg-center" style={{ backgroundImage: `url("${user.avatar_url}")` }} /> : <div className="grid h-20 w-20 place-items-center rounded-full bg-blue-100 text-2xl font-black text-blue-700">{user?.name?.slice(0, 1)}</div>}<div><h2 className="text-2xl font-black">{user?.name}</h2><p className="text-slate-500">{user?.email}</p><span className="mt-2 inline-block rounded-full bg-emerald-50 px-3 py-1 text-xs font-black text-emerald-700">Verified {user?.provider} account</span></div></div><div className="mt-7 grid gap-4 sm:grid-cols-2">{[["Role", "Cyber Forensics Analyst"], ["Workspace", "Team TruthLens"], ["Access", "Investigation & Reports"], ["Account ID", user?.id ?? ""]].map(([label, value]) => <div key={label} className="rounded-xl bg-slate-50 p-4"><p className="text-xs font-black uppercase text-slate-500">{label}</p><p className="mt-2 break-all font-bold">{value}</p></div>)}</div></section></AppShell>;
+}
