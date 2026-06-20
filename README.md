@@ -16,6 +16,7 @@ TruthLens is an AI-powered Deepfake and Cybersecurity Verification Platform buil
 - Email/password authentication with PBKDF2 password hashing and expiring sessions
 - Optional Google Identity Services login with server-side Google token verification
 - User-owned cases, reports, evidence, alerts, and investigation timeline
+- Administrator-only `/system-docs` architecture documentation with live configuration health and PDF export
 - Working routes for every dashboard and sidebar destination
 - Unified drag-and-drop upload for JPG, JPEG, PNG, WEBP, video, audio, and EML/text email files
 - Automatic image/video/audio/URL/email classification and routing
@@ -68,6 +69,7 @@ NEXT_PUBLIC_GOOGLE_CLIENT_ID=
 TRUTHLENS_DATABASE_URL=sqlite:///./truthlens.db
 TRUTHLENS_STORAGE_DIR=./storage
 TRUTHLENS_AUTH_SECRET=replace-with-a-long-random-secret
+TRUTHLENS_ADMIN_EMAILS=administrator@example.com
 GOOGLE_CLIENT_ID=
 ALLOWED_ORIGINS=http://localhost:3000
 ```
@@ -92,6 +94,8 @@ NEXT_PUBLIC_BASE_PATH=/TruthLens
 ```
 
 For Google Sign-In, create a Google OAuth 2.0 Web Client, add the deployed frontend origin, and set the same client ID in `GOOGLE_CLIENT_ID` on the backend and `NEXT_PUBLIC_GOOGLE_CLIENT_ID` on the frontend.
+
+Administrator access is resolved from `users.role` and `TRUTHLENS_ADMIN_EMAILS`. The `/system-docs` page and `/system/documentation*` APIs reject non-administrators. Documentation is generated from installed package versions, SQLite schema inspection, configured providers, implemented pipelines, and deployment settings; secret values are never returned.
 
 The backend includes `backend/railway.json`. Use persistent storage for SQLite and forensic evidence in production.
 

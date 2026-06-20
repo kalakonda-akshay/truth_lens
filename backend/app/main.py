@@ -12,6 +12,7 @@ from app.services.analyzer import analyze_email_text, analyze_upload, analyze_ur
 from app.services.pdf import build_pdf
 from app.services.auth import authenticate_token, google_login, login_user, logout_user, register_user
 from app.services.storage import get_report, list_reports, save_report
+from app.services.system_docs import build_system_documentation, build_system_documentation_pdf
 
 settings = get_settings()
 app = FastAPI(title=settings.app_name, version="1.0.0")
@@ -56,6 +57,13 @@ def _current_user(authorization: str | None, required: bool = True) -> dict[str,
     user = authenticate_token(_bearer_token(authorization))
     if required and user is None:
         raise HTTPException(status_code=401, detail="Authentication required.")
+    return user
+
+
+def _administrator(authorization: str | None) -> dict[str, str]:
+    user = _current_user(authorization)
+    if user["role"] != "administrator":
+        raise HTTPException(status_code=403, detail="Administrator access required.")
     return user
 
 
@@ -147,6 +155,23 @@ async def analyze_email(request: TextAnalysisRequest, authorization: str | None 
 def user_reports(authorization: str | None = Header(None)) -> list[AnalysisReport]:
     user = _current_user(authorization)
     return list_reports(user["id"])
+
+
+@app.get("/system/documentation")
+def system_documentation(authorization: str | None = Header(None)) -> dict:
+    _administrator(authorization)
+    return build_system_documentation()
+
+
+@app.get("/system/documentation/pdf")
+def system_documentation_pdf(authorization: str | None = Header(None)) -> Response:
+    _administrator(authorization)
+    documentation = build_system_documentation()
+    return Response(
+        build_system_documentation_pdf(documentation),
+        media_type="application/pdf",
+        headers={"Content-Disposition": 'attachment; filename="truthlens-system-documentation.pdf"'},
+    )
 
 
 @app.get("/reports/{report_id}", response_model=AnalysisReport)
