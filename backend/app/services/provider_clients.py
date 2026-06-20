@@ -162,7 +162,6 @@ def resemble_detect_audio(path: Path) -> ProviderResult:
             response = requests.post(
                 settings.resemble_detect_url,
                 headers={"Authorization": f"Bearer {settings.resemble_api_key}", "Prefer": "wait"},
-                data={"visualize": "true", "audio_source_tracing": "true", "zero_retention_mode": "true"},
                 files={"file": (path.name, handle)},
                 timeout=60,
             )
@@ -187,6 +186,14 @@ def resemble_detect_audio(path: Path) -> ProviderResult:
         if label:
             evidence.append(f"Resemble Detect label: {label}.")
         return ProviderResult("Resemble Detect", True, probability, label, evidence, payload)
+    except requests.HTTPError as exc:
+        response = exc.response
+        detail = str(exc)
+        if response is not None:
+            body = response.text.strip()
+            if body:
+                detail = f"{detail}: {body[:500]}"
+        return ProviderResult("Resemble Detect", False, error=detail)
     except Exception as exc:
         return ProviderResult("Resemble Detect", False, error=str(exc))
 
