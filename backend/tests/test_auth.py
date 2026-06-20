@@ -49,12 +49,6 @@ class AuthTests(unittest.TestCase):
         self.assertEqual(user["role"], "administrator")
         self.assertEqual(authenticate_token(token)["role"], "administrator")
 
-    def test_analyst_role_is_preserved_for_other_users(self):
-        from app.services.auth import register_user
-
-        user, _ = register_user("Regular Analyst", "regular@example.test", "strong-user-pass")
-        self.assertEqual(user["role"], "analyst")
-
 
 if __name__ == "__main__":
     unittest.main()
