@@ -55,6 +55,24 @@ class AuthTests(unittest.TestCase):
         user, _ = register_user("Regular Analyst", "regular@example.test", "strong-user-pass")
         self.assertEqual(user["role"], "analyst")
 
+    def test_first_user_bootstraps_as_administrator_without_configuration(self):
+        from app.config import get_settings
+        from app.database import db_connection
+        from app.services.auth import register_user
+
+        original = os.environ.get("TRUTHLENS_ADMIN_EMAILS", "")
+        os.environ["TRUTHLENS_ADMIN_EMAILS"] = ""
+        get_settings.cache_clear()
+        try:
+            with db_connection() as conn:
+                conn.execute("DELETE FROM sessions")
+                conn.execute("DELETE FROM users")
+            user, _ = register_user("Bootstrap Admin", "bootstrap@example.test", "strong-bootstrap-pass")
+            self.assertEqual(user["role"], "administrator")
+        finally:
+            os.environ["TRUTHLENS_ADMIN_EMAILS"] = original
+            get_settings.cache_clear()
+
 
 if __name__ == "__main__":
     unittest.main()

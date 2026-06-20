@@ -73,6 +73,10 @@ def register_user(name: str, email: str, password: str) -> tuple[dict[str, str],
         existing = conn.execute("SELECT id FROM users WHERE email = ?", (normalized_email,)).fetchone()
         if existing:
             raise ValueError("An account with this email already exists.")
+        configured_admin = normalized_email in get_settings().administrators
+        existing_admin = conn.execute("SELECT id FROM users WHERE role = 'administrator' LIMIT 1").fetchone()
+        initial_admin = existing_admin is None and not get_settings().administrators
+        role = "administrator" if configured_admin or initial_admin else "analyst"
         conn.execute(
             """
             INSERT INTO users (id, email, name, password_hash, avatar_url, provider, role, created_at)
@@ -83,7 +87,7 @@ def register_user(name: str, email: str, password: str) -> tuple[dict[str, str],
                 normalized_email,
                 name.strip() or "TruthLens Analyst",
                 _password_hash(password),
-                "administrator" if normalized_email in get_settings().administrators else "analyst",
+                role,
                 _now().isoformat(),
             ),
         )
@@ -137,6 +141,9 @@ def google_login(credential: str) -> tuple[dict[str, str], str]:
         row = conn.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
         if row is None:
             user_id = str(uuid.uuid4())
+            existing_admin = conn.execute("SELECT id FROM users WHERE role = 'administrator' LIMIT 1").fetchone()
+            initial_admin = existing_admin is None and not settings.administrators
+            role = "administrator" if email in settings.administrators or initial_admin else "analyst"
             conn.execute(
                 """
                 INSERT INTO users (id, email, name, password_hash, avatar_url, provider, role, created_at)
@@ -147,7 +154,7 @@ def google_login(credential: str) -> tuple[dict[str, str], str]:
                     email,
                     payload.get("name") or "TruthLens Analyst",
                     payload.get("picture") or "",
-                    "administrator" if email in settings.administrators else "analyst",
+                    role,
                     _now().isoformat(),
                 ),
             )
