@@ -153,7 +153,21 @@ def reality_defender_audio(path: Path) -> ProviderResult:
         )
         presign.raise_for_status()
         presign_payload = presign.json()
-        upload_url = _find_first(presign_payload, ["signedUrl", "presignedUrl", "uploadUrl", "url", "data.signedUrl", "data.presignedUrl", "data.uploadUrl"])
+        upload_url = _find_first(
+            presign_payload,
+            [
+                "signedUrl",
+                "presignedUrl",
+                "uploadUrl",
+                "url",
+                "response.signedUrl",
+                "response.presignedUrl",
+                "response.uploadUrl",
+                "data.signedUrl",
+                "data.presignedUrl",
+                "data.uploadUrl",
+            ],
+        )
         request_id = _find_first(presign_payload, ["requestId", "request_id", "id", "data.requestId", "data.request_id", "media.requestId"])
         if not upload_url or not request_id:
             return ProviderResult("Reality Defender", False, raw=presign_payload, error=f"Reality Defender presign response missing upload URL or request id: {presign_payload}")

@@ -14,6 +14,7 @@ from app.services.analyzer import (
     analyze_url_text,
     authenticity_verdict,
 )
+from app.services.provider_clients import _find_first
 
 
 class ContentModelTests(unittest.TestCase):
@@ -129,6 +130,18 @@ class ContentModelTests(unittest.TestCase):
         self.assertGreaterEqual(report.scores.threat_score, 65)
         self.assertEqual(report.email_analysis["url_engine_urls_checked"], 1)
         self.assertTrue(report.email_analysis["highlighted_suspicious_content"])
+
+    def test_reality_defender_presign_response_shape(self):
+        payload = {
+            "response": {"signedUrl": "https://uploads.example.test/audio"},
+            "requestId": "media-request-id",
+        }
+
+        self.assertEqual(
+            _find_first(payload, ["response.signedUrl", "data.signedUrl"]),
+            "https://uploads.example.test/audio",
+        )
+        self.assertEqual(_find_first(payload, ["requestId", "data.requestId"]), "media-request-id")
 
 
 if __name__ == "__main__":
