@@ -7,11 +7,11 @@ import { backendCandidates, fetchTextAnalysis, normalizeReport } from "@/lib/api
 import { recordScan } from "@/lib/scanStats";
 
 const analysisModes = [
-  { key: "image", label: "Images", Icon: FileImage },
-  { key: "video", label: "Videos", Icon: FileVideo },
-  { key: "audio", label: "Audio", Icon: FileAudio },
-  { key: "url", label: "URLs", Icon: LinkIcon },
-  { key: "email", label: "Emails", Icon: FileText },
+  { key: "image", label: "Images", detail: "JPG, PNG, WEBP", Icon: FileImage },
+  { key: "video", label: "Videos", detail: "MP4, MOV, AVI", Icon: FileVideo },
+  { key: "audio", label: "Audio", detail: "MP3, WAV, M4A", Icon: FileAudio },
+  { key: "url", label: "URLs", detail: "Paste Link", Icon: LinkIcon },
+  { key: "email", label: "Emails", detail: "EML, TXT, Paste", Icon: FileText },
 ] as const;
 
 function detectMediaType(file: File) {
@@ -59,7 +59,7 @@ export function UploadPanel() {
       return;
     }
     if ((mode === "image" && nextType !== "Image") || (mode === "video" && nextType !== "Video") || (mode === "audio" && nextType !== "Audio")) {
-      setError(`This dashboard tab expects ${mode} evidence. Switch tabs or choose a matching file.`);
+      setError(`This investigation type expects ${mode} evidence. Switch type or choose a matching file.`);
       return;
     }
     setError("");
@@ -155,21 +155,21 @@ export function UploadPanel() {
   }
 
   return (
-    <section id="upload" className="mx-auto mt-16 max-w-5xl px-6">
-      <div className="glass rounded-[2rem] p-6 shadow-glow md:p-8">
+    <section id="upload" className="w-full">
+      <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm md:p-6">
         <div className="mb-6 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
           <div>
-            <p className="text-sm font-semibold uppercase tracking-[0.35em] text-cyber-cyan">Upload dashboard</p>
-            <h2 className="mt-3 text-3xl font-black text-white md:text-4xl">Unified cyber verification</h2>
+            <h2 className="text-base font-black text-slate-950">Start New Investigation</h2>
+            <p className="mt-1 text-xs text-slate-500">Upload or submit suspicious content to begin analysis</p>
           </div>
-          <div className="flex items-center gap-2 rounded-full border border-cyber-green/30 bg-cyber-green/10 px-4 py-2 text-sm text-cyber-green">
+          <div className="flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-700">
             <ShieldCheck className="h-4 w-4" />
-            Explainable AI report
+            Evidence-backed report
           </div>
         </div>
 
-        <div className="mb-6 grid gap-2 sm:grid-cols-5">
-          {analysisModes.map(({ key, label, Icon }) => (
+        <div className="mb-5 grid gap-3 sm:grid-cols-5">
+          {analysisModes.map(({ key, label, detail, Icon }) => (
             <button
               key={key}
               type="button"
@@ -179,19 +179,20 @@ export function UploadPanel() {
                 setError("");
                 setProgress(0);
               }}
-              className={`rounded-2xl border px-4 py-3 text-sm font-black transition ${
-                mode === key ? "border-cyber-cyan bg-cyber-cyan text-slate-950" : "border-slate-700 bg-slate-950/50 text-slate-300 hover:border-cyber-cyan"
+              className={`rounded-xl border px-4 py-4 text-center transition hover:-translate-y-0.5 ${
+                mode === key ? "border-blue-600 bg-blue-50 text-blue-700 shadow-sm" : "border-slate-200 bg-white text-slate-700 hover:border-blue-300 hover:bg-slate-50"
               }`}
             >
-              <Icon className="mx-auto mb-2 h-5 w-5" />
-              {label}
+              <Icon className="mx-auto mb-2 h-7 w-7" />
+              <p className="text-sm font-black">{label}</p>
+              <p className="mt-1 text-[11px] font-medium text-slate-500">{detail}</p>
             </button>
           ))}
         </div>
 
         {mode === "url" || mode === "email" ? (
-          <div className="rounded-3xl border border-slate-700 bg-slate-950/50 p-5">
-            <label className="text-sm font-black uppercase tracking-[0.25em] text-cyber-cyan">
+          <div className="rounded-xl border border-slate-200 bg-slate-50 p-5">
+            <label className="text-xs font-black uppercase tracking-[0.16em] text-blue-700">
               {mode === "url" ? "URL analysis" : "Email scam analysis"}
             </label>
             <textarea
@@ -199,7 +200,7 @@ export function UploadPanel() {
               onChange={(event) => setTextInput(event.target.value)}
               rows={mode === "url" ? 3 : 9}
               placeholder={mode === "url" ? "https://secure-bank-login.example.com/verify" : "Paste email headers/body or suspicious message text here..."}
-              className="mt-4 w-full rounded-2xl border border-slate-700 bg-slate-950 p-4 text-sm text-white outline-none transition placeholder:text-slate-600 focus:border-cyber-cyan"
+              className="mt-4 w-full rounded-xl border border-slate-200 bg-white p-4 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
             />
             {mode === "email" && (
               <div className="mt-4">
@@ -213,13 +214,13 @@ export function UploadPanel() {
                 <button
                   type="button"
                   onClick={() => inputRef.current?.click()}
-                  className="rounded-xl border border-cyber-cyan/40 px-4 py-2 text-sm font-bold text-cyber-cyan hover:bg-cyber-cyan hover:text-slate-950"
+                  className="rounded-xl border border-blue-200 bg-white px-4 py-2 text-sm font-bold text-blue-700 hover:bg-blue-600 hover:text-white"
                 >
                   Upload EML/Text File
                 </button>
               </div>
             )}
-            <p className="mt-3 text-sm text-slate-400">
+            <p className="mt-3 text-sm text-slate-500">
               {mode === "url" ? "Checks phishing indicators, typosquatting, suspicious domains, and redirect syntax." : "Checks phishing language, impersonation, credential theft, scam pressure, and risky links."}
             </p>
           </div>
@@ -237,8 +238,8 @@ export function UploadPanel() {
               setDragging(false);
               selectFile(event.dataTransfer.files[0]);
             }}
-            className={`flex w-full flex-col items-center justify-center rounded-3xl border border-dashed p-10 text-center transition ${
-              dragging ? "border-cyber-cyan bg-cyber-cyan/10" : "border-slate-600 bg-slate-950/50 hover:border-cyber-cyan/70"
+            className={`flex w-full flex-col items-center justify-center rounded-xl border border-dashed p-8 text-center transition ${
+              dragging ? "border-blue-500 bg-blue-50" : "border-slate-300 bg-slate-50 hover:border-blue-400 hover:bg-blue-50/50"
             }`}
           >
             <input
@@ -248,42 +249,42 @@ export function UploadPanel() {
               className="hidden"
               onChange={(event) => selectFile(event.target.files?.[0])}
             />
-            <CloudUpload className="h-14 w-14 text-cyber-cyan" />
-            <p className="mt-4 text-xl font-bold text-white">Drag and drop {mode} evidence</p>
-            <p className="mt-2 max-w-xl text-sm text-slate-400">Images: JPG/PNG/WEBP · Video: MP4/MOV/AVI · Audio: MP3/WAV/M4A</p>
+            <CloudUpload className="h-10 w-10 text-blue-600" />
+            <p className="mt-4 text-base font-black text-slate-900">Drag & drop files here or click to upload</p>
+            <p className="mt-1 max-w-xl text-sm text-slate-500">Your files are secure and only used for analysis.</p>
           </button>
         )}
 
         {file && mode !== "url" && mode !== "email" && (
-          <div className="mt-6 rounded-2xl border border-slate-700 bg-slate-950/70 p-4">
+          <div className="mt-6 rounded-xl border border-slate-200 bg-slate-50 p-4">
             <div className="flex items-center gap-3">
               {detectedType === "Image" ? (
-                <FileImage className="h-5 w-5 text-cyber-cyan" />
+                <FileImage className="h-5 w-5 text-blue-600" />
               ) : detectedType === "Audio" ? (
-                <FileAudio className="h-5 w-5 text-cyber-cyan" />
+                <FileAudio className="h-5 w-5 text-blue-600" />
               ) : (
-                <FileVideo className="h-5 w-5 text-cyber-cyan" />
+                <FileVideo className="h-5 w-5 text-blue-600" />
               )}
               <div>
-                <p className="font-semibold text-white">{file.name}</p>
-                <p className="text-sm text-slate-400">
+                <p className="font-semibold text-slate-900">{file.name}</p>
+                <p className="text-sm text-slate-500">
                   {(file.size / (1024 * 1024)).toFixed(2)} MB · Detected Media Type: {detectedType}
                 </p>
               </div>
             </div>
-            <div className="mt-4 h-3 overflow-hidden rounded-full bg-slate-800">
-              <div className="h-full rounded-full bg-gradient-to-r from-cyber-cyan to-cyber-green transition-all" style={{ width: `${progress}%` }} />
+            <div className="mt-4 h-2 overflow-hidden rounded-full bg-slate-200">
+              <div className="h-full rounded-full bg-gradient-to-r from-blue-600 to-emerald-500 transition-all" style={{ width: `${progress}%` }} />
             </div>
           </div>
         )}
 
-        {error && <p className="mt-4 text-sm text-cyber-red">{error}</p>}
+        {error && <p className="mt-4 text-sm font-semibold text-red-600">{error}</p>}
 
         <button
           type="button"
           onClick={upload}
           disabled={isAnalyzing}
-          className="mt-6 w-full rounded-2xl bg-cyber-cyan px-6 py-4 text-base font-black text-slate-950 transition hover:-translate-y-0.5 hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-60"
+          className="mt-6 w-full rounded-xl bg-blue-600 px-6 py-4 text-base font-black text-white transition hover:-translate-y-0.5 hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
         >
           {isAnalyzing ? "Analyzing evidence..." : "Run TruthLens Analysis"}
         </button>
