@@ -68,3 +68,8 @@ def init_db() -> None:
         user_columns = {row["name"] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
         if "role" not in user_columns:
             conn.execute("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'analyst'")
+        administrator = conn.execute("SELECT id FROM users WHERE role = 'administrator' LIMIT 1").fetchone()
+        if administrator is None and not get_settings().administrators:
+            first_user = conn.execute("SELECT id FROM users ORDER BY created_at ASC LIMIT 1").fetchone()
+            if first_user:
+                conn.execute("UPDATE users SET role = 'administrator' WHERE id = ?", (first_user["id"],))

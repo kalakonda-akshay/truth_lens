@@ -1,5 +1,11 @@
 {
   "buildCommand": "npm run build",
   "installCommand": "npm install",
-  "framework": "nextjs"
+  "framework": "nextjs",
+  "rewrites": [
+    {
+      "source": "/google248bd3fab4128b4f.html",
+      "destination": "/TruthLens/google248bd3fab4128b4f.html"
+    }
+  ]
 }
