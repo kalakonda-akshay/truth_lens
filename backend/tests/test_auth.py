@@ -11,7 +11,6 @@ class AuthTests(unittest.TestCase):
         os.environ["TRUTHLENS_DATABASE_URL"] = f"sqlite:///{Path(cls.temp_dir.name) / 'auth.db'}"
         os.environ["TRUTHLENS_STORAGE_DIR"] = str(Path(cls.temp_dir.name) / "storage")
         os.environ["TRUTHLENS_AUTH_SECRET"] = "unit-test-auth-secret"
-        os.environ["TRUTHLENS_ADMIN_EMAILS"] = "admin@example.test"
 
         from app.config import get_settings
         get_settings.cache_clear()
@@ -41,13 +40,6 @@ class AuthTests(unittest.TestCase):
             register_user("Duplicate", "second@example.test", "strong-pass-456")
         with self.assertRaises(ValueError):
             login_user("second@example.test", "wrong-password")
-
-    def test_configured_administrator_role(self):
-        from app.services.auth import authenticate_token, register_user
-
-        user, token = register_user("Administrator", "admin@example.test", "strong-admin-pass")
-        self.assertEqual(user["role"], "administrator")
-        self.assertEqual(authenticate_token(token)["role"], "administrator")
 
 
 if __name__ == "__main__":

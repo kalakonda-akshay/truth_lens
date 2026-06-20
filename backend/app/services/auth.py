@@ -49,7 +49,6 @@ def _public_user(row: Any) -> dict[str, str]:
         "name": row["name"],
         "avatar_url": row["avatar_url"],
         "provider": row["provider"],
-        "role": "administrator" if row["email"].lower() in get_settings().administrators else row["role"],
     }
 
 
@@ -75,17 +74,10 @@ def register_user(name: str, email: str, password: str) -> tuple[dict[str, str],
             raise ValueError("An account with this email already exists.")
         conn.execute(
             """
-            INSERT INTO users (id, email, name, password_hash, avatar_url, provider, role, created_at)
-            VALUES (?, ?, ?, ?, '', 'email', ?, ?)
+            INSERT INTO users (id, email, name, password_hash, avatar_url, provider, created_at)
+            VALUES (?, ?, ?, ?, '', 'email', ?)
             """,
-            (
-                user_id,
-                normalized_email,
-                name.strip() or "TruthLens Analyst",
-                _password_hash(password),
-                "administrator" if normalized_email in get_settings().administrators else "analyst",
-                _now().isoformat(),
-            ),
+            (user_id, normalized_email, name.strip() or "TruthLens Analyst", _password_hash(password), _now().isoformat()),
         )
         row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
     return _public_user(row), _create_session(user_id)
@@ -139,17 +131,10 @@ def google_login(credential: str) -> tuple[dict[str, str], str]:
             user_id = str(uuid.uuid4())
             conn.execute(
                 """
-                INSERT INTO users (id, email, name, password_hash, avatar_url, provider, role, created_at)
-                VALUES (?, ?, ?, NULL, ?, 'google', ?, ?)
+                INSERT INTO users (id, email, name, password_hash, avatar_url, provider, created_at)
+                VALUES (?, ?, ?, NULL, ?, 'google', ?)
                 """,
-                (
-                    user_id,
-                    email,
-                    payload.get("name") or "TruthLens Analyst",
-                    payload.get("picture") or "",
-                    "administrator" if email in settings.administrators else "analyst",
-                    _now().isoformat(),
-                ),
+                (user_id, email, payload.get("name") or "TruthLens Analyst", payload.get("picture") or "", _now().isoformat()),
             )
             row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
         else:
