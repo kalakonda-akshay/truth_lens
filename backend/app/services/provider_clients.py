@@ -161,24 +161,28 @@ def resemble_detect_audio(path: Path) -> ProviderResult:
         with path.open("rb") as handle:
             response = requests.post(
                 settings.resemble_detect_url,
-                headers={"Authorization": f"Bearer {settings.resemble_api_key}"},
-                files={"audio": (path.name, handle)},
+                headers={"Authorization": f"Bearer {settings.resemble_api_key}", "Prefer": "wait"},
+                data={"visualize": "true", "audio_source_tracing": "true", "zero_retention_mode": "true"},
+                files={"file": (path.name, handle)},
                 timeout=60,
             )
         response.raise_for_status()
         payload = response.json()
-        probability = _first_probability(payload, [
+        probability = _resemble_detection_probability(payload)
+        if probability == 0:
+            probability = _first_probability(payload, [
             "voice_clone_probability",
             "fake_probability",
             "deepfake_probability",
             "probability",
             "score",
+            "item.metrics.aggregated_score",
             "data.score",
             "data.probability",
             "result.score",
             "result.probability",
-        ])
-        label = str(_nested_get(payload, "label") or _nested_get(payload, "result.label") or _nested_get(payload, "data.label") or "Resemble Detect")
+            ])
+        label = str(_nested_get(payload, "item.metrics.label") or _nested_get(payload, "label") or _nested_get(payload, "result.label") or _nested_get(payload, "data.label") or "Resemble Detect")
         evidence = [f"Resemble Detect voice-clone probability: {probability}%."]
         if label:
             evidence.append(f"Resemble Detect label: {label}.")
@@ -273,3 +277,22 @@ def _first_probability(payload: dict[str, Any], paths: list[str]) -> int:
         if value is not None:
             return _percent(value)
     return 0
+
+
+def _resemble_detection_probability(payload: dict[str, Any]) -> int:
+    metrics = _nested_get(payload, "item.metrics")
+    if not isinstance(metrics, dict):
+        return 0
+    score = metrics.get("aggregated_score")
+    if score is None:
+        scores = metrics.get("score")
+        if isinstance(scores, list) and scores:
+            try:
+                score = max(float(item) for item in scores)
+            except (TypeError, ValueError):
+                score = None
+    probability = _percent(score)
+    label = str(metrics.get("label") or "").lower()
+    if label in {"real", "authentic", "bonafide", "bona-fide", "human"}:
+        return int(np.clip(100 - probability, 0, 100))
+    return probability
