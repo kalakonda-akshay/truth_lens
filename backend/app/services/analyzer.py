@@ -16,7 +16,7 @@ from app.config import get_settings
 from app.models import AnalysisReport, EvidenceItem, MetadataReport, ScoreCard, SuspiciousFrame
 from app.services.content_models import infer_audio_ai_probability, infer_image_ai_probability, infer_video_ai_probability
 from app.services.pretrained_models import infer_pretrained_audio, infer_pretrained_images
-from app.services.provider_clients import resemble_detect_audio, sightengine_frames, sightengine_image, virustotal_url
+from app.services.provider_clients import reality_defender_audio, sightengine_frames, sightengine_image
 from app.services.risk import calculate_scores, risk_level
 
 
@@ -56,6 +56,20 @@ def authenticity_verdict(probability: int, analysis_status: str = "completed") -
     return "AUTHENTIC"
 
 
+def audio_ai_classification(probability: int, analysis_status: str = "completed") -> str:
+    if analysis_status != "completed":
+        return "ANALYSIS FAILED"
+    if probability >= 76:
+        return "SYNTHETIC AUDIO"
+    if probability >= 50:
+        return "LIKELY SYNTHETIC"
+    if probability >= 25:
+        return "SUSPICIOUS"
+    if probability >= 11:
+        return "LIKELY AUTHENTIC"
+    return "AUTHENTIC"
+
+
 def _failed_score() -> ScoreCard:
     return ScoreCard(authenticity_score=0, deepfake_probability=0, risk_level="Analysis Failed", confidence_score=0, threat_score=0)
 
@@ -76,6 +90,98 @@ def threat_classification(score: int, media_type: str = "media") -> str:
     if score >= 35:
         return "Medium Threat"
     return "Low Threat"
+
+
+BRAND_PATTERNS = {
+    "paypal": ["paypal", "paypa1", "pay-pal", "secure-paypal"],
+    "google": ["google", "g00gle", "gooogle", "google-security"],
+    "microsoft": ["microsoft", "micros0ft", "office365", "outlook-security"],
+    "apple": ["apple", "appleid", "icloud"],
+    "amazon": ["amazon", "amaz0n", "amzn"],
+    "facebook": ["facebook", "faceb00k", "meta"],
+    "whatsapp": ["whatsapp", "whatsapp-login"],
+    "bank": ["bank", "sbi", "hdfc", "icici", "axisbank"],
+}
+RISKY_TLDS = {"zip", "mov", "click", "top", "xyz", "tk", "ml", "ga", "cf", "gq", "icu", "win", "rest", "quest", "mom", "country"}
+SUSPICIOUS_URL_KEYWORDS = {"login", "verify", "secure", "account", "update", "wallet", "reset", "signin", "auth", "otp", "kyc", "claim", "bonus", "reward", "gift", "airdrop", "unlock", "confirm"}
+
+
+def local_url_detection(raw_url: str) -> dict:
+    parsed = urlparse(raw_url if re.match(r"^https?://", raw_url, re.I) else f"https://{raw_url}")
+    domain = parsed.netloc.lower()
+    host_parts = [part for part in domain.split(".") if part]
+    tld = host_parts[-1] if host_parts else ""
+    path_query = f"{parsed.path}?{parsed.query}".lower()
+    full = raw_url.lower()
+    indicators: list[str] = []
+    score = 0
+
+    if parsed.scheme != "https":
+        indicators.append("URL does not use HTTPS.")
+        score += 18
+    if "@" in raw_url:
+        indicators.append("URL contains @ redirection syntax.")
+        score += 30
+    if re.search(r"\d+\.\d+\.\d+\.\d+", domain):
+        indicators.append("Domain uses a raw IP address.")
+        score += 32
+    if len(host_parts) > 3:
+        indicators.append("Excessive subdomain depth detected.")
+        score += 12
+    if len(raw_url) > 95:
+        indicators.append("URL length is unusually long.")
+        score += 12
+    if tld in RISKY_TLDS:
+        indicators.append(f"Risky top-level domain detected: .{tld}.")
+        score += 20
+    keyword_hits = sorted({word for word in SUSPICIOUS_URL_KEYWORDS if word in full})
+    if keyword_hits:
+        indicators.append("Suspicious keyword(s) detected: " + ", ".join(keyword_hits[:6]) + ".")
+        score += min(30, 8 + len(keyword_hits) * 5)
+    brand_hits = []
+    for brand, variants in BRAND_PATTERNS.items():
+        if any(variant in domain for variant in variants):
+            brand_hits.append(brand)
+    if brand_hits and not any(domain.endswith(f"{brand}.com") or domain == f"{brand}.com" for brand in brand_hits):
+        indicators.append("Brand impersonation or typosquatting signal detected: " + ", ".join(sorted(set(brand_hits))) + ".")
+        score += 32
+    if "-" in domain:
+        indicators.append("Hyphenated domain structure detected.")
+        score += 8
+    if re.search(r"[a-z]{12,}\.", domain):
+        indicators.append("High-entropy domain label detected.")
+        score += 16
+    if parsed.query and re.search(r"(redirect|url|next|return|continue|target)=", parsed.query, re.I):
+        indicators.append("Redirect parameter detected in query string.")
+        score += 20
+    if re.search(r"(password|credential|seed|recovery|wallet|card|cvv|bank|invoice|payment)", path_query):
+        indicators.append("Credential, payment, or wallet collection pattern detected.")
+        score += 22
+    if not indicators:
+        indicators.append("Benign structure observed: HTTPS URL with no phishing keywords, risky TLD, redirect pattern, or brand impersonation indicators.")
+    score = int(np.clip(score, 0, 100))
+    if score >= 85:
+        classification = "MALICIOUS"
+    elif score >= 65:
+        classification = "LIKELY PHISHING"
+    elif score >= 35:
+        classification = "SUSPICIOUS"
+    else:
+        classification = "SAFE"
+    return {
+        "domain": domain,
+        "scheme": parsed.scheme,
+        "path": parsed.path,
+        "tld": tld,
+        "indicators": indicators,
+        "threat_score": score,
+        "phishing_probability": score,
+        "domain_risk_score": int(np.clip(score + (10 if tld in RISKY_TLDS else 0), 0, 100)),
+        "threat_classification": classification,
+        "credential_harvesting": any("Credential" in item or "keyword" in item for item in indicators),
+        "redirect_risk": any("Redirect" in item or "redirection" in item for item in indicators),
+        "typosquatting": any("typosquatting" in item.lower() or "Brand impersonation" in item for item in indicators),
+    }
 
 
 def _model_confidence(probability: int, evidence_count: int, model_available: bool = True) -> int:
@@ -699,24 +805,26 @@ def analyze_audio_clone(path: Path, media_type: str, report_id: str | None = Non
             y = y[: sr * 45]
         if len(y) == 0:
             raise ValueError("empty audio")
-        resemble = resemble_detect_audio(path)
-        if not resemble.available:
+        reality = reality_defender_audio(path)
+        if not reality.available:
             frames = [_write_audio_spectrogram(path, report_id, y, sr)] if report_id else []
             return {
                 "synthetic_voice_confidence": 0,
+                "synthetic_audio_probability": 0,
                 "voice_clone_probability": 0,
                 "voice_clone_detected": "NO",
-                "ai_model": "Resemble Detect",
+                "ai_model": "Reality Defender",
                 "ai_model_probability": 0,
-                "resemble_available": False,
-                "resemble_probability": 0,
-                "resemble_label": resemble.label,
-                "resemble_error": resemble.error,
+                "reality_defender_available": False,
+                "reality_defender_probability": 0,
+                "reality_defender_label": reality.label,
+                "reality_defender_error": reality.error,
                 "analysis_status": "failed",
-                "model_used": "Resemble Detect",
-                "error_details": resemble.error,
-                "model_evidence": [f"Resemble Detect unavailable: {resemble.error}"],
-                "summary": "Resemble Detect analysis failed; no voice-clone score was generated.",
+                "model_used": "Reality Defender",
+                "detection_engine": "Reality Defender",
+                "error_details": reality.error,
+                "model_evidence": [f"Reality Defender unavailable: {reality.error}"],
+                "summary": "Reality Defender analysis failed; no voice-clone score was generated.",
             }, frames
         content_model = infer_audio_ai_probability(y, sr)
         pretrained_model = infer_pretrained_audio(y, sr)
@@ -724,19 +832,20 @@ def analyze_audio_clone(path: Path, media_type: str, report_id: str | None = Non
             pretrained_model.probability if pretrained_model.available else 0,
             content_model.probability,
         )
-        confidence = resemble.probability if resemble.available else fallback_confidence
+        confidence = reality.probability if reality.available else fallback_confidence
         frames = [_write_audio_spectrogram(path, report_id, y, sr)] if report_id else []
         features = content_model.features
         return {
             "synthetic_voice_confidence": confidence,
+            "synthetic_audio_probability": confidence,
             "voice_clone_probability": confidence,
             "voice_clone_detected": "YES" if confidence >= 65 else "NO",
-            "ai_model": resemble.provider if resemble.available else pretrained_model.model_name if pretrained_model.available else content_model.label,
+            "ai_model": reality.provider if reality.available else pretrained_model.model_name if pretrained_model.available else content_model.label,
             "ai_model_probability": confidence,
-            "resemble_available": resemble.available,
-            "resemble_probability": resemble.probability,
-            "resemble_label": resemble.label,
-            "resemble_error": resemble.error,
+            "reality_defender_available": reality.available,
+            "reality_defender_probability": reality.probability,
+            "reality_defender_label": reality.label,
+            "reality_defender_error": reality.error,
             "pretrained_model": pretrained_model.model_name,
             "pretrained_model_available": pretrained_model.available,
             "pretrained_model_probability": pretrained_model.probability,
@@ -744,9 +853,9 @@ def analyze_audio_clone(path: Path, media_type: str, report_id: str | None = Non
             "pretrained_model_error": pretrained_model.error or "",
             "forensic_model_probability": content_model.probability,
             "model_evidence": (
-                resemble.evidence
-                if resemble.available
-                else [f"Resemble Detect unavailable: {resemble.error}"]
+                reality.evidence
+                if reality.available
+                else [f"Reality Defender unavailable: {reality.error}"]
             ) + (
                 [f"Pretrained voice detector probability: {pretrained_model.probability}% ({pretrained_model.label})"]
                 if pretrained_model.available
@@ -759,11 +868,23 @@ def analyze_audio_clone(path: Path, media_type: str, report_id: str | None = Non
             **{f"model_{key}": round(value, 4) if isinstance(value, float) else value for key, value in content_model.features.items()},
             "summary": "Audio content model evaluated spectrogram, MFCC variance, spectral flatness, frequency distribution, RMS dynamics, and pitch contour.",
             "analysis_status": "completed",
-            "model_used": "Resemble Detect",
+            "model_used": "Reality Defender",
+            "detection_engine": "Reality Defender",
             "error_details": "",
         }, frames
     except Exception as exc:
-        return {"synthetic_voice_confidence": 0, "summary": f"Audio could not be decoded; no synthetic voice finding was generated. {exc}"}, []
+        return {
+            "synthetic_voice_confidence": 0,
+            "synthetic_audio_probability": 0,
+            "voice_clone_probability": 0,
+            "voice_clone_detected": "NO",
+            "analysis_status": "failed",
+            "model_used": "Reality Defender",
+            "detection_engine": "Reality Defender",
+            "error_details": f"Audio could not be decoded before Reality Defender analysis: {exc}",
+            "model_evidence": [f"Audio decode failed before provider analysis: {exc}"],
+            "summary": "Audio could not be decoded; no synthetic voice finding was generated.",
+        }, []
 
 
 def _text_metadata(label: str, indicators: list[str], size: int = 0) -> MetadataReport:
@@ -771,148 +892,54 @@ def _text_metadata(label: str, indicators: list[str], size: int = 0) -> Metadata
 
 
 def analyze_url_text(raw_url: str) -> AnalysisReport:
-    parsed = urlparse(raw_url if re.match(r"^https?://", raw_url, re.I) else f"https://{raw_url}")
-    domain = parsed.netloc.lower()
-    indicators: list[str] = []
-    score = 0
-    if parsed.scheme != "https":
-        indicators.append("URL does not use HTTPS.")
-        score += 18
-    if "@" in raw_url:
-        indicators.append("URL contains @ redirection syntax.")
-        score += 25
-    if re.search(r"\d+\.\d+\.\d+\.\d+", domain):
-        indicators.append("Domain uses a raw IP address.")
-        score += 25
-    if len([part for part in domain.split(".") if part]) > 3:
-        indicators.append("Excessive subdomain depth detected.")
-        score += 12
-    if re.search(r"(login|verify|secure|account|update|wallet|reset|signin|auth|otp|kyc)", raw_url, re.I):
-        indicators.append("Credential or account-verification keyword detected.")
-        score += 18
-    if re.search(r"(paypa1|g00gle|micros0ft|amaz0n|appleid|secure-bank|faceb00k|whatsapp-login)", domain, re.I):
-        indicators.append("Potential typosquatting or brand impersonation detected.")
-        score += 32
-    if re.search(r"(free|bonus|claim|airdrop|wallet|crypto|bank|loan)", raw_url, re.I):
-        indicators.append("Financial lure or credential-harvesting theme detected.")
-        score += 18
-    if parsed.query and re.search(r"(redirect|url|next|return|continue)=", parsed.query, re.I):
-        indicators.append("Redirect parameter detected in query string.")
-        score += 18
-    if len(domain) > 45:
-        indicators.append("Unusually long domain detected.")
-        score += 12
-    if re.search(r"[a-z]{12,}\\.", domain):
-        indicators.append("High-entropy domain label detected.")
-        score += 16
-    if "-" in domain:
-        indicators.append("Hyphenated domain structure detected.")
-        score += 8
-    if not indicators:
-        indicators.append("No phishing URL indicators detected.")
-    heuristic_score = int(np.clip(score, 0, 100))
-    domain_risk_score = int(np.clip(
-        (25 if re.search(r"(paypa1|g00gle|micros0ft|amaz0n|appleid|secure-bank|faceb00k|whatsapp-login)", domain, re.I) else 0)
-        + (18 if "-" in domain else 0)
-        + (18 if len(domain) > 45 else 0)
-        + (20 if re.search(r"[a-z]{12,}\\.", domain) else 0)
-        + (20 if re.search(r"\d+\.\d+\.\d+\.\d+", domain) else 0)
-        + (12 if len([part for part in domain.split(".") if part]) > 3 else 0),
-        0,
-        100,
-    ))
-    vt_result = virustotal_url(raw_url)
-    if not vt_result.available:
-        report_id = str(uuid.uuid4())
-        return AnalysisReport(
-            id=report_id,
-            filename=raw_url,
-            media_type="url",
-            uploaded_at=datetime.now(timezone.utc).isoformat(),
-            scores=_failed_score(),
-            metadata=_text_metadata("URL indicator", indicators),
-            face_analysis={},
-            lip_sync_analysis={},
-            audio_clone_detection={},
-            url_analysis={
-                "domain": domain,
-                "scheme": parsed.scheme,
-                "path": parsed.path,
-                "indicators": indicators,
-                "threat_score": 0,
-                "heuristic_threat_score": heuristic_score,
-                "phishing_probability": 0,
-                "domain_risk_score": 0,
-                "threat_classification": "ANALYSIS FAILED",
-                "virustotal_available": False,
-                "virustotal_error": vt_result.error,
-                "virustotal_evidence": [f"VirusTotal unavailable: {vt_result.error}"],
-            },
-            suspicious_frames=[],
-            evidence=[EvidenceItem(label="Analysis Failed", detail=f"VirusTotal URL analysis unavailable: {vt_result.error}", severity="Critical")],
-            verdict="Analysis Failed",
-            ai_classification="Unable To Determine",
-            authenticity_verdict="ANALYSIS FAILED",
-            analysis_status="failed",
-            model_used="VirusTotal API",
-            error_details=vt_result.error,
-            threat_classification="ANALYSIS FAILED",
-            model_confidence=0,
-            evidence_summary=f"VirusTotal URL analysis unavailable: {vt_result.error}",
-            analysis_summary="URL analysis failed because VirusTotal did not return a usable result.",
-            key_findings=[f"Analysis failed: {vt_result.error}"],
-            conclusion="TruthLens cannot determine URL safety because the required VirusTotal analysis failed.",
-            reasons_for_decision=[f"Analysis failed: {vt_result.error}"],
-            recommendations=["Do not trust or share this URL until VirusTotal analysis is available.", "Verify the destination through an official source."],
-        )
-    score = vt_result.threat_score
-    phishing_probability = vt_result.phishing_probability
-    domain_risk_score = max(domain_risk_score, vt_result.domain_risk_score)
-    vt_evidence = vt_result.evidence
+    detected = local_url_detection(raw_url)
+    score = int(detected["threat_score"])
+    phishing_probability = int(detected["phishing_probability"])
+    domain_risk_score = int(detected["domain_risk_score"])
+    indicators = list(detected["indicators"])
+    domain = str(detected["domain"])
     level = risk_level(score)
     report_id = str(uuid.uuid4())
-    classification = vt_result.classification if vt_result.available else threat_classification(score, "url")
-    evidence_items = [EvidenceItem(label="VirusTotal URL Intelligence", detail=item, severity=level) for item in vt_evidence]
-    evidence_items.extend(EvidenceItem(label="URL Indicator", detail=item, severity=level) for item in indicators if not item.startswith("No "))
+    classification = str(detected["threat_classification"])
+    evidence_items = [EvidenceItem(label="URL Threat Indicator", detail=item, severity=level) for item in indicators]
     return AnalysisReport(
         id=report_id,
         filename=raw_url,
         media_type="url",
         uploaded_at=datetime.now(timezone.utc).isoformat(),
-        scores=ScoreCard(authenticity_score=0, deepfake_probability=0, risk_level=level, confidence_score=_model_confidence(score, len(indicators) + len(vt_evidence), vt_result.available), threat_score=score),
+        scores=ScoreCard(authenticity_score=0, deepfake_probability=0, risk_level=level, confidence_score=_model_confidence(score, len(indicators), True), threat_score=score),
         metadata=_text_metadata("URL indicator", indicators),
         face_analysis={},
         lip_sync_analysis={},
         audio_clone_detection={},
         url_analysis={
             "domain": domain,
-            "scheme": parsed.scheme,
-            "path": parsed.path,
+            "scheme": str(detected["scheme"]),
+            "path": str(detected["path"]),
             "indicators": indicators,
             "threat_score": score,
-            "heuristic_threat_score": heuristic_score,
+            "heuristic_threat_score": score,
             "phishing_probability": phishing_probability,
             "domain_risk_score": domain_risk_score,
             "threat_classification": classification,
-            "virustotal_available": vt_result.available,
-            "virustotal_error": vt_result.error,
-            "virustotal_evidence": vt_evidence,
-            "credential_harvesting": any("Credential" in item for item in indicators),
-            "redirect_risk": any("Redirect" in item or "redirection" in item for item in indicators),
-            "typosquatting": any("typosquatting" in item.lower() for item in indicators),
+            "detection_engine": "TruthLens Local URL Engine",
+            "credential_harvesting": bool(detected["credential_harvesting"]),
+            "redirect_risk": bool(detected["redirect_risk"]),
+            "typosquatting": bool(detected["typosquatting"]),
+            "suspicious_preview": f"{classification}: {domain} scored {score}/100 from {len(indicators)} indicator(s).",
         },
         suspicious_frames=[],
         evidence=evidence_items,
         verdict="Likely Phishing" if score >= 65 else "Suspicious URL" if score >= 35 else "No URL Threat Detected",
         ai_classification="Unable To Determine",
-        authenticity_verdict=authenticity_verdict(score, "completed"),
+        authenticity_verdict=classification,
         analysis_status="completed",
-        model_used="VirusTotal API",
+        model_used="TruthLens Local URL Engine",
         error_details="",
         threat_classification=classification,
-        model_confidence=_model_confidence(score, len(indicators) + len(vt_evidence), vt_result.available),
+        model_confidence=_model_confidence(score, len(indicators), True),
         evidence_summary="; ".join([item.detail for item in evidence_items]) or "No URL threat evidence crossed threshold.",
-        analysis_summary=f"URL analysis used {'VirusTotal and local indicators' if vt_result.available else 'local indicators because VirusTotal is unavailable'}; measured threat score {score}%.",
+        analysis_summary=f"URL analysis used the TruthLens local phishing engine; measured threat score {score}%.",
         key_findings=[item.detail for item in evidence_items],
         conclusion="Treat this URL as unsafe until verified." if score >= 35 else "No high-risk URL indicators were detected.",
         reasons_for_decision=indicators,
@@ -948,66 +975,40 @@ def analyze_email_text(raw_email: str) -> AnalysisReport:
         indicators.append("Generic greeting often used in phishing.")
         score += 10
     if not indicators:
-        indicators.append("No scam or phishing indicators detected.")
+        indicators.append("Benign language observed: no urgency, credential request, payment lure, risky attachment, or impersonation phrase crossed threshold.")
     heuristic_score = int(np.clip(score, 0, 100))
-    vt_results = [virustotal_url(url) for url in urls[:5]]
-    failed_vt = [result for result in vt_results if not result.available]
-    if failed_vt:
-        error_detail = "; ".join(result.error for result in failed_vt if result.error) or "VirusTotal URL checks failed."
-        report_id = str(uuid.uuid4())
-        return AnalysisReport(
-            id=report_id,
-            filename="Pasted email / EML content",
-            media_type="email",
-            uploaded_at=datetime.now(timezone.utc).isoformat(),
-            scores=_failed_score(),
-            metadata=_text_metadata("Email text / EML", indicators, len(raw_email.encode("utf-8"))),
-            face_analysis={},
-            lip_sync_analysis={},
-            audio_clone_detection={},
-            email_analysis={
-                "indicators": indicators,
-                "embedded_urls": urls,
-                "heuristic_threat_score": heuristic_score,
-                "virustotal_urls_checked": len(vt_results),
-                "virustotal_evidence": [f"VirusTotal unavailable: {error_detail}"],
-                "highlight_terms": ["password", "urgent", "verify", "suspended", "invoice", "gift card"],
-            },
-            suspicious_frames=[],
-            evidence=[EvidenceItem(label="Analysis Failed", detail=f"VirusTotal email URL check unavailable: {error_detail}", severity="Critical")],
-            verdict="Analysis Failed",
-            ai_classification="Unable To Determine",
-            authenticity_verdict="ANALYSIS FAILED",
-            analysis_status="failed",
-            model_used="Email Analysis Engine + VirusTotal API",
-            error_details=error_detail,
-            threat_classification="ANALYSIS FAILED",
-            model_confidence=0,
-            evidence_summary=f"VirusTotal email URL check unavailable: {error_detail}",
-            analysis_summary="Email analysis failed because embedded URL intelligence did not return a usable result.",
-            key_findings=[f"Analysis failed: {error_detail}"],
-            conclusion="TruthLens cannot determine email safety because the required URL intelligence check failed.",
-            reasons_for_decision=[f"Analysis failed: {error_detail}"],
-            recommendations=["Do not click links or open attachments until URL intelligence is available.", "Verify the sender through a known trusted channel."],
-        )
-    vt_scores = [result.threat_score for result in vt_results if result.available]
-    vt_evidence = []
-    for url, result in zip(urls[:5], vt_results):
-        if result.available:
-            vt_evidence.extend([f"{url}: {item}" for item in result.evidence])
+    url_results = [local_url_detection(url) for url in urls[:8]]
+    url_scores = [int(result["threat_score"]) for result in url_results]
+    url_evidence = []
+    for url, result in zip(urls[:8], url_results):
+        if int(result["threat_score"]) >= 35:
+            url_evidence.append(f"{url}: {result['threat_classification']} ({result['threat_score']}/100) because " + "; ".join(str(item) for item in result["indicators"][:3]))
         else:
-            vt_evidence.append(f"{url}: VirusTotal unavailable: {result.error}")
-    score = int(np.clip(max([heuristic_score] + vt_scores) if vt_scores else heuristic_score, 0, 100))
+            url_evidence.append(f"{url}: SAFE ({result['threat_score']}/100) because " + "; ".join(str(item) for item in result["indicators"][:2]))
+    score = int(np.clip(max([heuristic_score] + url_scores) if url_scores else heuristic_score, 0, 100))
     level = risk_level(score)
     report_id = str(uuid.uuid4())
     evidence_items = [EvidenceItem(label="Email Indicator", detail=item, severity=level) for item in indicators if not item.startswith("No ")]
-    evidence_items.extend(EvidenceItem(label="VirusTotal URL Intelligence", detail=item, severity=level) for item in vt_evidence)
+    evidence_items.extend(EvidenceItem(label="Embedded URL Indicator", detail=item, severity=level) for item in url_evidence)
+    if score >= 85:
+        email_classification = "MALICIOUS"
+    elif score >= 65:
+        email_classification = "LIKELY PHISHING"
+    elif score >= 35:
+        email_classification = "SUSPICIOUS"
+    else:
+        email_classification = "LEGITIMATE"
+    highlight_terms = ["password", "urgent", "verify", "suspended", "invoice", "gift card", "otp", "kyc", "wire transfer", "crypto"]
+    highlighted = []
+    for term in highlight_terms:
+        if term in lowered:
+            highlighted.append(term)
     return AnalysisReport(
         id=report_id,
         filename="Pasted email / EML content",
         media_type="email",
         uploaded_at=datetime.now(timezone.utc).isoformat(),
-        scores=ScoreCard(authenticity_score=0, deepfake_probability=0, risk_level=level, confidence_score=_model_confidence(score, len(indicators) + len(vt_evidence), any(result.available for result in vt_results) if urls else True), threat_score=score),
+        scores=ScoreCard(authenticity_score=0, deepfake_probability=0, risk_level=level, confidence_score=_model_confidence(score, len(indicators) + len(url_evidence), True), threat_score=score),
         metadata=_text_metadata("Email text / EML", indicators, len(raw_email.encode("utf-8"))),
         face_analysis={},
         lip_sync_analysis={},
@@ -1016,22 +1017,26 @@ def analyze_email_text(raw_email: str) -> AnalysisReport:
             "indicators": indicators,
             "embedded_urls": urls,
             "heuristic_threat_score": heuristic_score,
-            "virustotal_urls_checked": len(vt_results),
-            "virustotal_evidence": vt_evidence,
-            "highlight_terms": ["password", "urgent", "verify", "suspended", "invoice", "gift card"],
+            "url_engine_urls_checked": len(url_results),
+            "url_engine_evidence": url_evidence,
+            "highlight_terms": highlight_terms,
+            "highlighted_suspicious_content": highlighted,
+            "threat_score": score,
+            "threat_classification": email_classification,
+            "suspicious_preview": f"{email_classification}: message scored {score}/100 from {len(evidence_items)} indicator(s).",
         },
         suspicious_frames=[],
         evidence=evidence_items,
         verdict="Likely Email Scam" if score >= 65 else "Suspicious Email" if score >= 35 else "No Email Threat Detected",
         ai_classification="Unable To Determine",
-        authenticity_verdict=authenticity_verdict(score, "completed"),
+        authenticity_verdict=email_classification,
         analysis_status="completed",
-        model_used="Email Analysis Engine + VirusTotal API" if vt_results else "Email Analysis Engine",
+        model_used="TruthLens Local Email Engine",
         error_details="",
-        threat_classification=threat_classification(score, "email"),
-        model_confidence=_model_confidence(score, len(indicators) + len(vt_evidence), any(result.available for result in vt_results) if urls else True),
+        threat_classification=email_classification,
+        model_confidence=_model_confidence(score, len(indicators) + len(url_evidence), True),
         evidence_summary="; ".join([item.detail for item in evidence_items]) or "No email threat evidence crossed threshold.",
-        analysis_summary=f"Email analysis measured {len([i for i in indicators if not i.startswith('No ')])} scam/phishing indicator(s) and checked {len(vt_results)} embedded URL(s).",
+        analysis_summary=f"Email analysis used the TruthLens local email engine and checked {len(url_results)} embedded URL(s).",
         key_findings=[item.detail for item in evidence_items],
         conclusion="Treat this email as phishing until verified through another channel." if score >= 35 else "No high-risk email scam indicators were detected.",
         reasons_for_decision=indicators,
@@ -1094,7 +1099,7 @@ def analyze_upload(file_name: str, content_type: str | None, source: BinaryIO) -
             error_details = str(face_analysis.get("error_details", ""))
         elif media_type == "audio":
             analysis_status = str(audio_clone.get("analysis_status", "completed"))
-            model_used = str(audio_clone.get("model_used", "Resemble Detect"))
+            model_used = str(audio_clone.get("model_used", "Reality Defender"))
             error_details = str(audio_clone.get("error_details", ""))
         else:
             analysis_status = "failed"
@@ -1157,8 +1162,8 @@ def analyze_upload(file_name: str, content_type: str | None, source: BinaryIO) -
         suspicious_frames=suspicious_frames,
         evidence=evidence,
         verdict=verdict,
-        ai_classification="Unable To Determine" if analysis_status != "completed" else ai_classification(scores.deepfake_probability),
-        authenticity_verdict=authenticity_verdict(scores.deepfake_probability, analysis_status),
+        ai_classification="Unable To Determine" if analysis_status != "completed" else audio_ai_classification(scores.deepfake_probability, analysis_status) if media_type == "audio" else ai_classification(scores.deepfake_probability),
+        authenticity_verdict=audio_ai_classification(scores.deepfake_probability, analysis_status) if media_type == "audio" else authenticity_verdict(scores.deepfake_probability, analysis_status),
         analysis_status=analysis_status,
         model_used=model_used,
         error_details=error_details,

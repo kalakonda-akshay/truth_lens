@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import io
 import time
 from dataclasses import dataclass, field
@@ -31,19 +30,6 @@ class SightengineMediaResult:
     available: bool
     ai_probability: int = 0
     deepfake_probability: int = 0
-    evidence: list[str] = field(default_factory=list)
-    raw: dict[str, Any] = field(default_factory=dict)
-    error: str = ""
-
-
-@dataclass(frozen=True)
-class VirusTotalResult:
-    provider: str
-    available: bool
-    threat_score: int = 0
-    phishing_probability: int = 0
-    domain_risk_score: int = 0
-    classification: str = "SAFE"
     evidence: list[str] = field(default_factory=list)
     raw: dict[str, Any] = field(default_factory=dict)
     error: str = ""
@@ -153,39 +139,56 @@ def sightengine_frames(frames: list[np.ndarray], models: str = "genai,deepfake")
         return SightengineMediaResult("Sightengine", False, raw={"frames": raw_results}, error=str(exc))
 
 
-def resemble_detect_audio(path: Path) -> ProviderResult:
+def reality_defender_audio(path: Path) -> ProviderResult:
     settings = get_settings()
-    if not _settings_ready(settings.resemble_api_key, settings.resemble_detect_url):
-        return ProviderResult("Resemble Detect", False, error="Resemble Detect credentials are not configured.")
+    if not _settings_ready(settings.reality_defender_api_key):
+        return ProviderResult("Reality Defender", False, error="Reality Defender API key is not configured.")
+    headers = {"X-API-KEY": settings.reality_defender_api_key}
     try:
+        presign = requests.post(
+            "https://api.prd.realitydefender.xyz/api/files/aws-presigned",
+            headers={**headers, "Content-Type": "application/json"},
+            json={"fileName": path.name},
+            timeout=30,
+        )
+        presign.raise_for_status()
+        presign_payload = presign.json()
+        upload_url = _find_first(presign_payload, ["signedUrl", "presignedUrl", "uploadUrl", "url", "data.signedUrl", "data.presignedUrl", "data.uploadUrl"])
+        request_id = _find_first(presign_payload, ["requestId", "request_id", "id", "data.requestId", "data.request_id", "media.requestId"])
+        if not upload_url or not request_id:
+            return ProviderResult("Reality Defender", False, raw=presign_payload, error=f"Reality Defender presign response missing upload URL or request id: {presign_payload}")
         with path.open("rb") as handle:
-            response = requests.post(
-                settings.resemble_detect_url,
-                headers={"Authorization": f"Bearer {settings.resemble_api_key}", "Prefer": "wait"},
-                files={"file": (path.name, handle)},
-                timeout=60,
+            upload = requests.put(str(upload_url), data=handle, timeout=90)
+        upload.raise_for_status()
+        detail_payload: dict[str, Any] = {}
+        for _ in range(18):
+            detail = requests.get(
+                f"https://api.prd.realitydefender.xyz/api/media/users/{request_id}",
+                headers=headers,
+                timeout=30,
             )
-        response.raise_for_status()
-        payload = response.json()
-        probability = _resemble_detection_probability(payload)
-        if probability == 0:
-            probability = _first_probability(payload, [
-            "voice_clone_probability",
-            "fake_probability",
-            "deepfake_probability",
-            "probability",
-            "score",
-            "item.metrics.aggregated_score",
-            "data.score",
-            "data.probability",
-            "result.score",
-            "result.probability",
-            ])
-        label = str(_nested_get(payload, "item.metrics.label") or _nested_get(payload, "label") or _nested_get(payload, "result.label") or _nested_get(payload, "data.label") or "Resemble Detect")
-        evidence = [f"Resemble Detect voice-clone probability: {probability}%."]
-        if label:
-            evidence.append(f"Resemble Detect label: {label}.")
-        return ProviderResult("Resemble Detect", True, probability, label, evidence, payload)
+            detail.raise_for_status()
+            detail_payload = detail.json()
+            status = str(_nested_get(detail_payload, "resultsSummary.status") or "").upper()
+            if status in {"AUTHENTIC", "FAKE", "SUSPICIOUS", "NOT_APPLICABLE", "UNABLE_TO_EVALUATE"}:
+                break
+            time.sleep(5)
+        summary = _nested_get(detail_payload, "resultsSummary") or {}
+        status = str(summary.get("status") or "").upper()
+        if status in {"NOT_APPLICABLE", "UNABLE_TO_EVALUATE", ""}:
+            reasons = summary.get("metadata", {}).get("reasons") if isinstance(summary, dict) else None
+            error = summary.get("error") if isinstance(summary, dict) else None
+            return ProviderResult("Reality Defender", False, raw=detail_payload, error=f"Reality Defender could not evaluate audio. Status: {status or 'UNKNOWN'}. Reasons: {reasons or error or 'No details returned.'}")
+        final_score = _percent(_nested_get(detail_payload, "resultsSummary.metadata.finalScore"))
+        probability = final_score if status in {"FAKE", "SUSPICIOUS"} else int(np.clip(100 - final_score, 0, 100))
+        evidence = [
+            f"Reality Defender status: {status}.",
+            f"Reality Defender ensemble final score: {final_score}%.",
+        ]
+        languages = _nested_get(detail_payload, "resultsSummary.metadata.languages")
+        if languages:
+            evidence.append(f"Detected language(s): {languages}.")
+        return ProviderResult("Reality Defender", True, probability, status, evidence, detail_payload)
     except requests.HTTPError as exc:
         response = exc.response
         detail = str(exc)
@@ -193,80 +196,9 @@ def resemble_detect_audio(path: Path) -> ProviderResult:
             body = response.text.strip()
             if body:
                 detail = f"{detail}: {body[:500]}"
-        return ProviderResult("Resemble Detect", False, error=detail)
+        return ProviderResult("Reality Defender", False, error=detail)
     except Exception as exc:
-        return ProviderResult("Resemble Detect", False, error=str(exc))
-
-
-def virustotal_url(raw_url: str) -> VirusTotalResult:
-    settings = get_settings()
-    if not _settings_ready(settings.virustotal_api_key):
-        return VirusTotalResult("VirusTotal", False, error="VirusTotal API key is not configured.")
-    headers = {"x-apikey": settings.virustotal_api_key}
-    try:
-        normalized = raw_url if raw_url.startswith(("http://", "https://")) else f"https://{raw_url}"
-        analysis_payload: dict[str, Any] | None = None
-        post = requests.post("https://www.virustotal.com/api/v3/urls", headers=headers, data={"url": normalized}, timeout=25)
-        if post.status_code < 400:
-            analysis_id = ((post.json().get("data") or {}).get("id") or "").strip()
-            for _ in range(4):
-                if not analysis_id:
-                    break
-                analysis = requests.get(f"https://www.virustotal.com/api/v3/analyses/{analysis_id}", headers=headers, timeout=25)
-                if analysis.status_code < 400:
-                    analysis_payload = analysis.json()
-                    status = (((analysis_payload.get("data") or {}).get("attributes") or {}).get("status") or "").lower()
-                    if status == "completed":
-                        break
-                time.sleep(1.5)
-        url_id = base64.urlsafe_b64encode(normalized.encode("utf-8")).decode("ascii").strip("=")
-        report = requests.get(f"https://www.virustotal.com/api/v3/urls/{url_id}", headers=headers, timeout=25)
-        report_payload = report.json() if report.status_code < 400 else {}
-        attrs = ((report_payload.get("data") or {}).get("attributes") or {})
-        stats = attrs.get("last_analysis_stats") or (((analysis_payload or {}).get("data") or {}).get("attributes") or {}).get("stats") or {}
-        results = attrs.get("last_analysis_results") or {}
-        malicious = int(stats.get("malicious") or 0)
-        suspicious = int(stats.get("suspicious") or 0)
-        harmless = int(stats.get("harmless") or 0)
-        undetected = int(stats.get("undetected") or 0)
-        total = max(malicious + suspicious + harmless + undetected, 1)
-        threat_score = int(np.clip(round(((malicious * 1.0 + suspicious * 0.55) / total) * 100), 0, 100))
-        if malicious >= 5:
-            threat_score = max(threat_score, 90)
-        elif malicious >= 2 or suspicious >= 4:
-            threat_score = max(threat_score, 70)
-        elif malicious == 1 or suspicious >= 1:
-            threat_score = max(threat_score, 42)
-        categories = [
-            str(item.get("category", "")).lower()
-            for item in results.values()
-            if isinstance(item, dict) and str(item.get("category", "")).lower() in {"malicious", "suspicious"}
-        ]
-        evidence = [f"VirusTotal engines: {malicious} malicious, {suspicious} suspicious, {harmless} harmless, {undetected} undetected."]
-        engine_names = [
-            name for name, item in results.items()
-            if isinstance(item, dict) and str(item.get("category", "")).lower() in {"malicious", "suspicious"}
-        ][:6]
-        if engine_names:
-            evidence.append("Flagging engines: " + ", ".join(engine_names) + ".")
-        if attrs.get("reputation") is not None:
-            evidence.append(f"VirusTotal reputation score: {attrs.get('reputation')}.")
-        phishing_probability = int(np.clip(max(threat_score, 75 if "phishing" in " ".join(categories) else 0), 0, 100))
-        classification = _url_classification(threat_score)
-        domain_risk_score = int(np.clip(round((malicious + suspicious) * 100 / total), 0, 100))
-        return VirusTotalResult("VirusTotal", True, threat_score, phishing_probability, domain_risk_score, classification, evidence, {"analysis": analysis_payload, "url": report_payload})
-    except Exception as exc:
-        return VirusTotalResult("VirusTotal", False, error=str(exc))
-
-
-def _url_classification(score: int) -> str:
-    if score >= 85:
-        return "MALICIOUS"
-    if score >= 65:
-        return "LIKELY PHISHING"
-    if score >= 35:
-        return "SUSPICIOUS"
-    return "SAFE"
+        return ProviderResult("Reality Defender", False, error=str(exc))
 
 
 def _nested_get(payload: dict[str, Any], path: str) -> Any:
@@ -286,20 +218,9 @@ def _first_probability(payload: dict[str, Any], paths: list[str]) -> int:
     return 0
 
 
-def _resemble_detection_probability(payload: dict[str, Any]) -> int:
-    metrics = _nested_get(payload, "item.metrics")
-    if not isinstance(metrics, dict):
-        return 0
-    score = metrics.get("aggregated_score")
-    if score is None:
-        scores = metrics.get("score")
-        if isinstance(scores, list) and scores:
-            try:
-                score = max(float(item) for item in scores)
-            except (TypeError, ValueError):
-                score = None
-    probability = _percent(score)
-    label = str(metrics.get("label") or "").lower()
-    if label in {"real", "authentic", "bonafide", "bona-fide", "human"}:
-        return int(np.clip(100 - probability, 0, 100))
-    return probability
+def _find_first(payload: dict[str, Any], paths: list[str]) -> Any:
+    for path in paths:
+        value = _nested_get(payload, path)
+        if value:
+            return value
+    return None

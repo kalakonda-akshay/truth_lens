@@ -8,7 +8,12 @@ from app.services.content_models import (
     infer_image_ai_probability,
     infer_video_ai_probability,
 )
-from app.services.analyzer import _fused_image_probability, authenticity_verdict
+from app.services.analyzer import (
+    _fused_image_probability,
+    analyze_email_text,
+    analyze_url_text,
+    authenticity_verdict,
+)
 
 
 class ContentModelTests(unittest.TestCase):
@@ -98,6 +103,32 @@ class ContentModelTests(unittest.TestCase):
         self.assertLess(real, 25)
         self.assertGreater(synthetic, 75)
         self.assertGreater(synthetic - real, 50)
+
+    def test_local_url_engine_separates_benign_and_phishing_urls(self):
+        benign = analyze_url_text("https://example.com/about")
+        phishing = analyze_url_text(
+            "http://paypa1-secure-login.xyz/verify/password?redirect=http://evil.test"
+        )
+
+        self.assertEqual(benign.threat_classification, "SAFE")
+        self.assertLess(benign.scores.threat_score, 35)
+        self.assertIn(phishing.threat_classification, {"LIKELY PHISHING", "MALICIOUS"})
+        self.assertGreaterEqual(phishing.scores.threat_score, 65)
+        self.assertTrue(phishing.url_analysis["typosquatting"])
+        self.assertTrue(phishing.url_analysis["credential_harvesting"])
+
+    def test_local_email_engine_checks_embedded_urls(self):
+        report = analyze_email_text(
+            "From: PayPal Security <support@gmail.com>\n"
+            "Subject: Urgent account suspended\n\n"
+            "Dear customer, verify your password immediately at "
+            "http://paypa1-secure-login.xyz/verify/password"
+        )
+
+        self.assertIn(report.threat_classification, {"LIKELY PHISHING", "MALICIOUS"})
+        self.assertGreaterEqual(report.scores.threat_score, 65)
+        self.assertEqual(report.email_analysis["url_engine_urls_checked"], 1)
+        self.assertTrue(report.email_analysis["highlighted_suspicious_content"])
 
 
 if __name__ == "__main__":

@@ -58,9 +58,9 @@ const navGroups = [
 
 const statuses = [
   ["Sightengine API", "Operational"],
-  ["Resemble Detect", "Operational"],
-  ["VirusTotal API", "Operational"],
-  ["Email Analysis Engine", "Operational"],
+  ["Reality Defender", "Operational"],
+  ["Local URL Engine", "Operational"],
+  ["Local Email Engine", "Operational"],
 ];
 
 const statCards = [
@@ -331,7 +331,7 @@ export default function Home() {
               {[
                 ["Audio Analysis", "Voice clone checks and spectrogram evidence"],
                 ["Video Analysis", "Frame extraction, suspicious timeline, AI frame scoring"],
-                ["URL Analysis", "VirusTotal-backed threat intelligence"],
+                ["URL Analysis", "Local phishing intelligence and indicator evidence"],
                 ["Email Analysis", "Phishing highlights and embedded URL checks"],
               ].map(([title, body]) => (
                 <div key={title} className="rounded-xl bg-[#07122B] p-5 text-white">

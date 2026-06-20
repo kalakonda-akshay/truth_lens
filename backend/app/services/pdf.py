@@ -43,14 +43,17 @@ def _section(title: str, rows: list[list[str]], header_color: str = "#0f172a") -
 
 def _score_cards(report: AnalysisReport) -> Table:
     if report.media_type in {"url", "email"}:
-        threat_score = int(report.url_analysis.get("threat_score", report.scores.threat_score))
-        phishing_probability = int(report.url_analysis.get("phishing_probability", report.scores.threat_score))
-        domain_risk_score = int(report.url_analysis.get("domain_risk_score", report.scores.threat_score))
-        classification = str(report.url_analysis.get("threat_classification", report.threat_classification)).upper()
+        threat_source = report.url_analysis if report.media_type == "url" else report.email_analysis
+        threat_score = int(threat_source.get("threat_score", report.scores.threat_score))
+        phishing_probability = int(threat_source.get("phishing_probability", report.scores.threat_score))
+        domain_risk_score = int(threat_source.get("domain_risk_score", report.scores.threat_score))
+        classification = str(threat_source.get("threat_classification", report.threat_classification)).upper()
+        middle_label = "PHISHING PROBABILITY" if report.media_type == "url" else "SCAM PROBABILITY"
+        risk_label = "DOMAIN RISK SCORE" if report.media_type == "url" else "EMAIL RISK SCORE"
         risk_color = "#dc2626" if threat_score >= 65 else "#f59e0b" if threat_score >= 35 else "#059669"
         table = Table(
             [
-                ["THREAT SCORE", "PHISHING PROBABILITY", "DOMAIN RISK SCORE", "THREAT CLASSIFICATION"],
+                ["THREAT SCORE", middle_label, risk_label, "THREAT CLASSIFICATION"],
                 [f"{threat_score}%", f"{phishing_probability}%", f"{domain_risk_score}%", classification],
             ],
             colWidths=[1.72 * inch] * 4,
@@ -112,6 +115,10 @@ def _score_cards(report: AnalysisReport) -> Table:
 def _classification_color(classification: str) -> str:
     if classification == "ANALYSIS FAILED":
         return "#991b1b"
+    if classification in {"MALICIOUS", "LIKELY PHISHING"}:
+        return "#dc2626"
+    if classification in {"SAFE", "LEGITIMATE"}:
+        return "#059669"
     if classification in {"AI GENERATED", "AI Generated"}:
         return "#dc2626"
     if classification in {"LIKELY AI GENERATED", "Likely AI Generated"}:
@@ -193,6 +200,7 @@ def build_pdf(report: AnalysisReport) -> bytes:
     styles = getSampleStyleSheet()
     body = ParagraphStyle("TruthLensBody", parent=styles["BodyText"], fontSize=8.5, leading=11)
     heading = ParagraphStyle("TruthLensHeading", parent=styles["Heading2"], fontSize=11, textColor=colors.HexColor("#0f172a"))
+    threat_source = report.url_analysis if report.media_type == "url" else report.email_analysis
 
     story = [
         _section(
@@ -216,9 +224,9 @@ def build_pdf(report: AnalysisReport) -> bytes:
                 *([["Error Details", report.error_details]] if report.error_details else []),
                 *(
                     [
-                        ["Threat Score", f"{report.url_analysis.get('threat_score', report.scores.threat_score)}%"],
-                        ["Phishing Probability", f"{report.url_analysis.get('phishing_probability', report.scores.deepfake_probability)}%"],
-                        ["Domain Risk Score", f"{report.url_analysis.get('domain_risk_score', report.scores.threat_score)}%"],
+                        ["Threat Score", f"{threat_source.get('threat_score', report.scores.threat_score)}%"],
+                        [("Phishing Probability" if report.media_type == "url" else "Scam Probability"), f"{threat_source.get('phishing_probability', report.scores.threat_score)}%"],
+                        [("Domain Risk Score" if report.media_type == "url" else "Email Risk Score"), f"{threat_source.get('domain_risk_score', report.scores.threat_score)}%"],
                     ]
                     if report.media_type in {"url", "email"}
                     else [
@@ -230,6 +238,15 @@ def build_pdf(report: AnalysisReport) -> bytes:
                 ["Risk Level", report.scores.risk_level.upper()],
                 ["Threat Classification", report.threat_classification.upper()],
                 ["Model Confidence", f"{report.model_confidence}%"],
+                *(
+                    [
+                        ["Detection Engine", str(report.audio_clone_detection.get("detection_engine", "Reality Defender"))],
+                        ["Voice Clone Probability", f"{report.audio_clone_detection.get('voice_clone_probability', 0)}%"],
+                        ["Synthetic Audio Probability", f"{report.audio_clone_detection.get('synthetic_audio_probability', 0)}%"],
+                    ]
+                    if report.media_type == "audio"
+                    else []
+                ),
                 ["Voice Clone Detected", report.voice_clone_detected],
                 ["Deepfake Detection", report.deepfake_detected],
             ],
@@ -268,6 +285,15 @@ def build_pdf(report: AnalysisReport) -> bytes:
                 ["Model Used", report.model_used],
                 *([["Error Details", report.error_details]] if report.error_details else []),
                 ["Model Confidence", f"{report.model_confidence}%"],
+                *(
+                    [
+                        ["Detection Engine", str(report.audio_clone_detection.get("detection_engine", "Reality Defender"))],
+                        ["Voice Clone Probability", f"{report.audio_clone_detection.get('voice_clone_probability', 0)}%"],
+                        ["Synthetic Audio Probability", f"{report.audio_clone_detection.get('synthetic_audio_probability', 0)}%"],
+                    ]
+                    if report.media_type == "audio"
+                    else []
+                ),
                 ["Voice Clone Detected", report.voice_clone_detected],
                 ["Deepfake Detection", report.deepfake_detected],
                 ["Evidence Summary", report.evidence_summary],

@@ -117,7 +117,9 @@ function TruthLensReport({ report }: { report: AnalysisReport }) {
       ? [
           ["Zero Crossing Rate", String(report.audio_clone_detection.zero_crossing_rate ?? "Not available")],
           ["RMS Energy", String(report.audio_clone_detection.rms_energy ?? "Not available")],
-          ["Synthetic Voice Score", `${report.audio_clone_detection.synthetic_voice_confidence ?? 0}%`],
+          ["Detection Engine", String(report.audio_clone_detection.detection_engine ?? "Reality Defender")],
+          ["Voice Clone Probability", `${report.audio_clone_detection.voice_clone_probability ?? 0}%`],
+          ["Synthetic Audio Probability", `${report.audio_clone_detection.synthetic_audio_probability ?? 0}%`],
         ]
       : report.media_type === "url"
         ? [
@@ -130,7 +132,7 @@ function TruthLensReport({ report }: { report: AnalysisReport }) {
       : report.media_type === "email"
         ? [
             ["Embedded URLs", String((report.email_analysis.embedded_urls as string[] | undefined)?.length ?? 0)],
-            ["VT URLs Checked", String(report.email_analysis.virustotal_urls_checked ?? 0)],
+            ["URL Checks", String(report.email_analysis.url_engine_urls_checked ?? 0)],
             ["Heuristic Score", `${report.email_analysis.heuristic_threat_score ?? 0}%`],
             ["Indicators", String((report.email_analysis.indicators as string[] | undefined)?.length ?? 0)],
           ]
@@ -231,7 +233,7 @@ function TruthLensReport({ report }: { report: AnalysisReport }) {
                 ...(report.media_type === "video" ? [["Deepfake Detection", report.deepfake_detected.toUpperCase()] as [string, string]] : []),
               ]}
             />
-            <div className={`mt-4 rounded-lg border px-4 py-3 text-center text-lg font-black ${classificationTone(report.authenticity_verdict)}`}>
+            <div className={`mt-4 rounded-lg border px-4 py-3 text-center text-lg font-black ${isThreatText ? urlThreatTone(textThreatClassification) : classificationTone(report.authenticity_verdict)}`}>
               AUTHENTICITY VERDICT: {report.authenticity_verdict.toUpperCase()}
             </div>
             <div className={`mt-3 rounded-lg border px-4 py-3 text-center text-sm font-black ${isThreatText ? urlThreatTone(textThreatClassification) : classificationTone(report.ai_classification)}`}>
@@ -244,7 +246,7 @@ function TruthLensReport({ report }: { report: AnalysisReport }) {
           {isThreatText ? (
             <>
               <ScoreCircle title="Threat Score" value={textThreatScore} caption={textThreatClassification} color="#dc2626" />
-              <ScoreCircle title="Phishing Probability" value={textPhishingProbability} caption={isUrl ? "URL Threat" : "Email Threat"} color="#f97316" />
+              <ScoreCircle title={isUrl ? "Phishing Probability" : "Scam Probability"} value={textPhishingProbability} caption={isUrl ? "URL Threat" : "Email Threat"} color="#f97316" />
               <ScoreCircle title={isUrl ? "Domain Risk Score" : "Email Risk Score"} value={textRiskScore} caption={isUrl ? String(report.url_analysis.domain ?? "Domain") : "Message"} color="#0ea5e9" />
             </>
           ) : (
