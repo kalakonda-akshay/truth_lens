@@ -13,6 +13,10 @@ TruthLens is an AI-powered Deepfake and Cybersecurity Verification Platform buil
 
 - Cybersecurity-themed landing page
 - Unified dashboard for images, videos, audio, URLs, and emails
+- Email/password authentication with PBKDF2 password hashing and expiring sessions
+- Optional Google Identity Services login with server-side Google token verification
+- User-owned cases, reports, evidence, alerts, and investigation timeline
+- Working routes for every dashboard and sidebar destination
 - Unified drag-and-drop upload for JPG, JPEG, PNG, WEBP, video, audio, and EML/text email files
 - Automatic image/video/audio/URL/email classification and routing
 - Metadata scanner with EXIF, camera, editing software, codec, and tampering indicators
@@ -59,8 +63,12 @@ Copy `.env.example` into the matching app directories or configure these values 
 
 ```bash
 NEXT_PUBLIC_API_URL=http://localhost:8000
+NEXT_PUBLIC_BASE_PATH=
+NEXT_PUBLIC_GOOGLE_CLIENT_ID=
 TRUTHLENS_DATABASE_URL=sqlite:///./truthlens.db
 TRUTHLENS_STORAGE_DIR=./storage
+TRUTHLENS_AUTH_SECRET=replace-with-a-long-random-secret
+GOOGLE_CLIENT_ID=
 ALLOWED_ORIGINS=http://localhost:3000
 ```
 
@@ -80,9 +88,12 @@ Deploy `frontend/` to Vercel. Image, video, and audio analysis requires the Fast
 
 ```bash
 NEXT_PUBLIC_API_URL=https://your-backend-url
+NEXT_PUBLIC_BASE_PATH=/TruthLens
 ```
 
-The backend includes `render.yaml` and `backend/railway.json`. The first image/audio request downloads the configured public Hugging Face detector weights into `TRUTHLENS_STORAGE_DIR/models`; use persistent storage in production when available.
+For Google Sign-In, create a Google OAuth 2.0 Web Client, add the deployed frontend origin, and set the same client ID in `GOOGLE_CLIENT_ID` on the backend and `NEXT_PUBLIC_GOOGLE_CLIENT_ID` on the frontend.
+
+The backend includes `backend/railway.json`. Use persistent storage for SQLite and forensic evidence in production.
 
 ## Prototype Note
 
