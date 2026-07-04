@@ -48,6 +48,7 @@ def list_admin_users() -> list[dict]:
         rows = conn.execute(
             """
             SELECT users.id, users.email, users.name, users.provider, users.role, users.created_at,
+                   users.password_reset_required,
                    COUNT(analyses.id) AS total_analyses,
                    SUM(CASE WHEN analyses.media_type = 'image' THEN 1 ELSE 0 END) AS image_analyses,
                    MAX(analyses.uploaded_at) AS last_activity

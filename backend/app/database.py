@@ -37,6 +37,7 @@ def init_db() -> None:
                 avatar_url TEXT NOT NULL DEFAULT '',
                 provider TEXT NOT NULL DEFAULT 'email',
                 role TEXT NOT NULL DEFAULT 'member',
+                password_reset_required INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL
             )
             """
@@ -78,6 +79,8 @@ def init_db() -> None:
         user_columns = {row["name"] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
         if "role" not in user_columns:
             conn.execute("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'member'")
+        if "password_reset_required" not in user_columns:
+            conn.execute("ALTER TABLE users ADD COLUMN password_reset_required INTEGER NOT NULL DEFAULT 0")
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(analyses)").fetchall()}
         if "user_id" not in columns:
             conn.execute("ALTER TABLE analyses ADD COLUMN user_id TEXT")

@@ -59,6 +59,37 @@ class AuthTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "register first"):
             request_login_otp("missing@example.test", "password-123")
 
+    def test_admin_password_reset_requires_user_to_change_password(self):
+        from app.services.auth import (
+            admin_reset_user_password,
+            authenticate_token,
+            change_password,
+            login_user,
+            register_user,
+            request_login_otp,
+            verify_login_otp,
+        )
+
+        user, original_token = register_user("Reset Me", "reset-me@example.test", "old-pass-123")
+        reset = admin_reset_user_password(user["id"])
+        self.assertEqual(reset["email"], "reset-me@example.test")
+        self.assertNotIn("old-pass-123", reset["temporary_password"])
+        self.assertIsNone(authenticate_token(original_token))
+
+        with self.assertRaises(ValueError):
+            login_user("reset-me@example.test", "old-pass-123")
+
+        challenge = request_login_otp("reset-me@example.test", reset["temporary_password"])
+        logged_in, token = verify_login_otp(challenge["challenge_id"], challenge["dev_otp"])
+        self.assertTrue(logged_in["password_reset_required"])
+
+        updated = change_password(logged_in["id"], reset["temporary_password"], "new-pass-123")
+        self.assertFalse(updated["password_reset_required"])
+        self.assertIsNone(authenticate_token(token))
+
+        final_user, _ = login_user("reset-me@example.test", "new-pass-123")
+        self.assertFalse(final_user["password_reset_required"])
+
 
 if __name__ == "__main__":
     unittest.main()

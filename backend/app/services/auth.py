@@ -51,6 +51,7 @@ def _public_user(row: Any) -> dict[str, str]:
         "avatar_url": row["avatar_url"],
         "provider": row["provider"],
         "role": row["role"] if "role" in row.keys() else "member",
+        "password_reset_required": bool(row["password_reset_required"]) if "password_reset_required" in row.keys() else False,
     }
 
 
@@ -87,8 +88,8 @@ def ensure_founder_admin() -> None:
             elif settings.founder_admin_bootstrap_password:
                 conn.execute(
                     """
-                    INSERT INTO users (id, email, name, password_hash, avatar_url, provider, role, created_at)
-                    VALUES (?, ?, ?, ?, '', 'email', 'founder_admin', ?)
+                    INSERT INTO users (id, email, name, password_hash, avatar_url, provider, role, password_reset_required, created_at)
+                    VALUES (?, ?, ?, ?, '', 'email', 'founder_admin', 0, ?)
                     """,
                     (
                         str(uuid.uuid4()),
@@ -111,8 +112,8 @@ def register_user(name: str, email: str, password: str) -> tuple[dict[str, str],
             raise ValueError("An account with this email already exists.")
         conn.execute(
             """
-            INSERT INTO users (id, email, name, password_hash, avatar_url, provider, role, created_at)
-            VALUES (?, ?, ?, ?, '', 'email', ?, ?)
+            INSERT INTO users (id, email, name, password_hash, avatar_url, provider, role, password_reset_required, created_at)
+            VALUES (?, ?, ?, ?, '', 'email', ?, 0, ?)
             """,
             (user_id, normalized_email, name.strip() or "TruthLens Analyst", _password_hash(password), _role_for_email(normalized_email), _now().isoformat()),
         )
@@ -186,6 +187,41 @@ def verify_login_otp(challenge_id: str, code: str) -> tuple[dict[str, str], str]
     return _public_user(user_row), _create_session(row["user_id"])
 
 
+def change_password(user_id: str, current_password: str, new_password: str) -> dict[str, str]:
+    if len(new_password) < 8:
+        raise ValueError("New password must contain at least 8 characters.")
+    with db_connection() as conn:
+        row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        if row is None or not row["password_hash"] or not _password_matches(current_password, row["password_hash"]):
+            raise ValueError("Current password is incorrect.")
+        conn.execute(
+            "UPDATE users SET password_hash = ?, password_reset_required = 0 WHERE id = ?",
+            (_password_hash(new_password), user_id),
+        )
+        conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+        updated = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+    return _public_user(updated)
+
+
+def admin_reset_user_password(user_id: str) -> dict[str, str]:
+    temp_password = f"TL-{secrets.token_urlsafe(9)}"
+    with db_connection() as conn:
+        row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        if row is None:
+            raise ValueError("User not found.")
+        conn.execute(
+            "UPDATE users SET password_hash = ?, provider = 'email', password_reset_required = 1 WHERE id = ?",
+            (_password_hash(temp_password), user_id),
+        )
+        conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+    return {
+        "user_id": user_id,
+        "email": row["email"],
+        "temporary_password": temp_password,
+        "message": "Temporary password generated. The user must change it after login.",
+    }
+
+
 def authenticate_token(token: str) -> dict[str, str] | None:
     if not token:
         return None
@@ -226,8 +262,8 @@ def google_login(credential: str) -> tuple[dict[str, str], str]:
             user_id = str(uuid.uuid4())
             conn.execute(
                 """
-                INSERT INTO users (id, email, name, password_hash, avatar_url, provider, role, created_at)
-                VALUES (?, ?, ?, NULL, ?, 'google', ?, ?)
+                INSERT INTO users (id, email, name, password_hash, avatar_url, provider, role, password_reset_required, created_at)
+                VALUES (?, ?, ?, NULL, ?, 'google', ?, 0, ?)
                 """,
                 (user_id, email, payload.get("name") or "TruthLens Analyst", payload.get("picture") or "", _role_for_email(email), _now().isoformat()),
             )

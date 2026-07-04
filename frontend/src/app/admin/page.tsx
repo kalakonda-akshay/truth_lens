@@ -3,7 +3,7 @@
 import Link from "next/link";
 import type { ComponentType } from "react";
 import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, FileImage, FileText, ShieldCheck, Users } from "lucide-react";
+import { AlertTriangle, FileImage, FileText, KeyRound, ShieldCheck, Users } from "lucide-react";
 import type { LucideProps } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
 import { authRequest, useAuth } from "@/lib/auth";
@@ -14,6 +14,7 @@ type AdminUser = {
   name: string;
   provider: string;
   role: string;
+  password_reset_required: number | boolean;
   created_at: string;
   total_analyses: number;
   image_analyses: number;
@@ -66,6 +67,7 @@ export default function AdminPage() {
   const [analyses, setAnalyses] = useState<AdminAnalysis[]>([]);
   const [filter, setFilter] = useState("all");
   const [error, setError] = useState("");
+  const [resetNotice, setResetNotice] = useState<{ email: string; temporary_password: string; message: string } | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -107,6 +109,21 @@ export default function AdminPage() {
     ["High Risk Reports", summary?.high_risk_reports ?? 0, AlertTriangle, "High/Critical findings"],
   ];
 
+  async function resetPassword(target: AdminUser) {
+    if (!confirm(`Generate a temporary password for ${target.email}? Their active sessions will be signed out.`)) return;
+    setError("");
+    setResetNotice(null);
+    try {
+      const response = await authRequest(`/admin/users/${target.id}/reset-password`, { method: "POST" });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail ?? "Password reset failed.");
+      setResetNotice(data);
+      setUsers((current) => current.map((item) => item.id === target.id ? { ...item, password_reset_required: true, provider: "email" } : item));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Password reset failed.");
+    }
+  }
+
   if (user?.role !== "founder_admin") {
     return (
       <AppShell title="Admin Panel" subtitle="Founder administrator monitoring for TruthLens AI.">
@@ -122,6 +139,18 @@ export default function AdminPage() {
   return (
     <AppShell title="Admin Panel" subtitle="Monitor users, uploads, image submissions, and TruthLens forensic reports.">
       {error && <div className="mb-5 rounded-2xl border border-red-200 bg-red-50 p-4 text-sm font-bold text-red-700">{error}</div>}
+      {resetNotice && (
+        <section className="mb-5 rounded-2xl border border-blue-200 bg-blue-50 p-5 text-blue-950">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <h2 className="font-black">Temporary password generated</h2>
+              <p className="mt-1 text-sm font-semibold">{resetNotice.email} must log in with this temporary password, complete OTP, then set a new password.</p>
+              <p className="mt-2 text-xs font-bold text-blue-700">Old password was not shown or exposed.</p>
+            </div>
+            <code className="rounded-xl bg-white px-4 py-3 text-lg font-black tracking-wide text-slate-950">{resetNotice.temporary_password}</code>
+          </div>
+        </section>
+      )}
       {loading ? (
         <div className="rounded-2xl border border-slate-200 bg-white p-8 text-center font-black text-slate-600">Loading admin intelligence...</div>
       ) : (
@@ -151,7 +180,7 @@ export default function AdminPage() {
             <div className="overflow-x-auto">
               <table className="min-w-[900px] w-full text-left text-sm">
                 <thead className="bg-slate-50 text-xs uppercase tracking-widest text-slate-500">
-                  <tr><th className="p-3">User</th><th className="p-3">Role</th><th className="p-3">Provider</th><th className="p-3">Total Scans</th><th className="p-3">Image Scans</th><th className="p-3">Joined</th><th className="p-3">Last Activity</th></tr>
+                  <tr><th className="p-3">User</th><th className="p-3">Role</th><th className="p-3">Provider</th><th className="p-3">Password</th><th className="p-3">Total Scans</th><th className="p-3">Image Scans</th><th className="p-3">Joined</th><th className="p-3">Last Activity</th><th className="p-3">Action</th></tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {users.map((item) => (
@@ -159,10 +188,12 @@ export default function AdminPage() {
                       <td className="p-3"><p className="font-black">{item.name}</p><p className="text-xs text-slate-500">{item.email}</p></td>
                       <td className="p-3"><span className={`rounded-full px-2.5 py-1 text-xs font-black ring-1 ${item.role === "founder_admin" ? "bg-blue-50 text-blue-700 ring-blue-200" : "bg-slate-50 text-slate-700 ring-slate-200"}`}>{item.role}</span></td>
                       <td className="p-3 font-semibold">{item.provider}</td>
+                      <td className="p-3"><span className={`rounded-full px-2.5 py-1 text-xs font-black ring-1 ${item.password_reset_required ? "bg-amber-50 text-amber-700 ring-amber-200" : "bg-emerald-50 text-emerald-700 ring-emerald-200"}`}>{item.password_reset_required ? "Change Required" : "OK"}</span></td>
                       <td className="p-3 font-black">{item.total_analyses}</td>
                       <td className="p-3 font-black">{item.image_analyses}</td>
                       <td className="p-3 text-xs">{formatDate(item.created_at)}</td>
                       <td className="p-3 text-xs">{formatDate(item.last_activity)}</td>
+                      <td className="p-3"><button onClick={() => void resetPassword(item)} className="inline-flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-xs font-black text-slate-700 hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700"><KeyRound className="h-4 w-4" />Reset</button></td>
                     </tr>
                   ))}
                 </tbody>

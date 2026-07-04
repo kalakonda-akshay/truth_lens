@@ -12,6 +12,8 @@ from app.services.analyzer import analyze_email_text, analyze_upload, analyze_ur
 from app.services.pdf import build_pdf
 from app.services.auth import (
     authenticate_token,
+    admin_reset_user_password,
+    change_password,
     ensure_founder_admin,
     google_login,
     login_user,
@@ -58,6 +60,11 @@ class ForgotPasswordRequest(BaseModel):
 class OtpVerifyRequest(BaseModel):
     challenge_id: str
     code: str
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
 
 
 def _bearer_token(authorization: str | None) -> str:
@@ -135,6 +142,16 @@ def forgot_password(request: ForgotPasswordRequest) -> dict[str, str]:
     }
 
 
+@app.post("/auth/change-password")
+def update_password(request: ChangePasswordRequest, authorization: str | None = Header(None)) -> dict:
+    user = _current_user(authorization)
+    try:
+        updated_user = change_password(user["id"], request.current_password, request.new_password)
+        return {"user": updated_user, "message": "Password updated. Please log in again."}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.get("/auth/me")
 def me(authorization: str | None = Header(None)) -> dict[str, str]:
     return _current_user(authorization)
@@ -188,6 +205,15 @@ def user_reports(authorization: str | None = Header(None)) -> list[AnalysisRepor
 def admin_users(authorization: str | None = Header(None)) -> dict:
     _current_admin(authorization)
     return {"users": list_admin_users()}
+
+
+@app.post("/admin/users/{user_id}/reset-password")
+def admin_reset_password(user_id: str, authorization: str | None = Header(None)) -> dict:
+    _current_admin(authorization)
+    try:
+        return admin_reset_user_password(user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.get("/admin/analyses")

@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, useContext, useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 
 export type AuthUser = {
   id: string;
@@ -10,6 +10,7 @@ export type AuthUser = {
   avatar_url: string;
   provider: string;
   role: string;
+  password_reset_required?: boolean;
 };
 
 type AuthContextValue = {
@@ -87,10 +88,12 @@ export function useAuth() {
 export function AuthGate({ children }: { children: React.ReactNode }) {
   const { user, ready } = useAuth();
   const router = useRouter();
+  const pathname = usePathname();
 
   useEffect(() => {
     if (ready && !user) router.replace("/login");
-  }, [ready, router, user]);
+    if (ready && user?.password_reset_required && pathname !== "/change-password") router.replace("/change-password");
+  }, [pathname, ready, router, user]);
 
   if (!ready || !user) {
     return <div className="grid min-h-screen place-items-center bg-[#07122B] text-sm font-bold text-white">Opening secure workspace...</div>;
