@@ -396,7 +396,7 @@ export default function ResultsPage() {
         <div className="glass max-w-xl rounded-[2rem] p-8 text-center">
           <h1 className="text-3xl font-black text-white">Report unavailable</h1>
           <p className="mt-4 text-slate-300">{error}</p>
-          <Link href="/" className="mt-6 inline-flex rounded-2xl bg-cyber-cyan px-6 py-3 font-black text-slate-950">Run new analysis</Link>
+          <Link href="/dashboard" className="mt-6 inline-flex rounded-2xl bg-cyber-cyan px-6 py-3 font-black text-slate-950">Run new analysis</Link>
         </div>
       </main>
     );
@@ -416,7 +416,7 @@ export default function ResultsPage() {
   return (
     <main className="cyber-grid min-h-screen px-4 py-8">
       <div className="mx-auto mb-6 flex max-w-[1120px] flex-col gap-4 md:flex-row md:items-center md:justify-between">
-        <Link href="/" className="inline-flex items-center gap-2 text-sm font-bold text-cyber-cyan">
+        <Link href={`/analyze/${report.media_type === "url" || report.media_type === "email" ? report.media_type : report.media_type}`} className="inline-flex items-center gap-2 text-sm font-bold text-cyber-cyan">
           <ArrowLeft className="h-4 w-4" />
           New analysis
         </Link>

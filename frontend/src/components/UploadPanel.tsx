@@ -86,9 +86,9 @@ export function UploadPanel({ initialMode = "image", showModeSelector = true }: 
       localStorage.setItem(storageKey, serializedReport);
       recordScan(report.media_type, report.scores.risk_level);
       setProgress(100);
-      router.push(`/results/${report.id}`);
-    } catch {
-      setError("Text analysis failed. Check the input and try again.");
+      router.replace(`/results/${report.id}`);
+    } catch (reason) {
+      setError(reason instanceof Error ? `Text analysis failed: ${reason.message}` : "Text analysis failed. Check the input and try again.");
       setProgress(0);
     } finally {
       setIsAnalyzing(false);
@@ -147,7 +147,7 @@ export function UploadPanel({ initialMode = "image", showModeSelector = true }: 
       localStorage.setItem(storageKey, serializedReport);
       recordScan(report.media_type, report.scores.risk_level);
       setProgress(100);
-      router.push(`/results/${report.id}`);
+      router.replace(`/results/${report.id}`);
     } catch {
       setError("Analysis service timed out or is unavailable. Check the FastAPI backend URL.");
       setProgress(0);

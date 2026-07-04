@@ -41,7 +41,7 @@ export function AuthForm({ mode }: { mode: "login" | "signup" | "forgot" }) {
     const data = await response.json();
     if (!response.ok) throw new Error(data.detail ?? "Authentication failed.");
     setSession(data.user as AuthUser, data.token);
-    router.push(data.user?.password_reset_required ? "/change-password" : "/dashboard");
+    router.replace(data.user?.password_reset_required ? "/change-password" : "/dashboard");
   }, [router, setSession]);
 
   async function submit(event: React.FormEvent) {

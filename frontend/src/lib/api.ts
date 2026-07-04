@@ -120,7 +120,13 @@ export function classifyAiProbability(probability: number) {
 }
 
 export async function fetchTextAnalysis(kind: "url" | "email", content: string): Promise<AnalysisReport> {
-  for (const endpoint of backendCandidates(`/analyze/${kind}`)) {
+  const path = `/analyze/${kind}`;
+  const candidates = [
+    `${API_PROXY_URL}${path}`,
+    ...backendCandidates(path).filter((endpoint) => endpoint !== `${API_PROXY_URL}${path}`),
+  ];
+  const errors: string[] = [];
+  for (const endpoint of candidates) {
     try {
       const response = await fetch(endpoint, {
         method: "POST",
@@ -133,11 +139,13 @@ export async function fetchTextAnalysis(kind: "url" | "email", content: string):
       if (response.ok) {
         return normalizeReport(await response.json());
       }
-    } catch {
-      // Try the next endpoint. Production prefers Railway directly and falls back to the Vercel proxy.
+      const errorBody = await response.json().catch(() => null);
+      errors.push(errorBody?.detail ?? `${response.status} ${response.statusText}`);
+    } catch (error) {
+      errors.push(error instanceof Error ? error.message : "Network error");
     }
   }
-  throw new Error("Unable to analyze text input");
+  throw new Error(errors.filter(Boolean).join(" | ") || "Unable to analyze text input");
 }
 
 export function verdictFromProbability(probability: number) {

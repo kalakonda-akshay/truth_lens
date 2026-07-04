@@ -31,7 +31,7 @@ export default function ChangePasswordPage() {
       const data = await response.json();
       if (!response.ok) throw new Error(data.detail ?? "Password update failed.");
       signOut();
-      router.push("/login");
+      router.replace("/login");
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Password update failed.");
     } finally {
