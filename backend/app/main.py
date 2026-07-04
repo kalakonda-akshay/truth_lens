@@ -10,8 +10,17 @@ from app.database import init_db
 from app.models import AnalysisReport
 from app.services.analyzer import analyze_email_text, analyze_upload, analyze_url_text
 from app.services.pdf import build_pdf
-from app.services.auth import authenticate_token, google_login, login_user, logout_user, register_user
-from app.services.storage import get_report, list_reports, save_report
+from app.services.auth import (
+    authenticate_token,
+    ensure_founder_admin,
+    google_login,
+    login_user,
+    logout_user,
+    register_user,
+    request_login_otp,
+    verify_login_otp,
+)
+from app.services.storage import get_report, list_admin_analyses, list_admin_users, list_reports, save_report
 
 settings = get_settings()
 app = FastAPI(title=settings.app_name, version="1.0.0")
@@ -46,6 +55,11 @@ class ForgotPasswordRequest(BaseModel):
     email: str
 
 
+class OtpVerifyRequest(BaseModel):
+    challenge_id: str
+    code: str
+
+
 def _bearer_token(authorization: str | None) -> str:
     if not authorization or not authorization.lower().startswith("bearer "):
         return ""
@@ -56,6 +70,13 @@ def _current_user(authorization: str | None, required: bool = True) -> dict[str,
     user = authenticate_token(_bearer_token(authorization))
     if required and user is None:
         raise HTTPException(status_code=401, detail="Authentication required.")
+    return user
+
+
+def _current_admin(authorization: str | None) -> dict[str, str]:
+    user = _current_user(authorization)
+    if user["role"] != "founder_admin":
+        raise HTTPException(status_code=403, detail="Founder administrator access required.")
     return user
 
 
@@ -70,6 +91,7 @@ def _auth_response(action) -> dict:
 @app.on_event("startup")
 def startup() -> None:
     init_db()
+    ensure_founder_admin()
 
 
 @app.get("/health")
@@ -85,6 +107,19 @@ def signup(request: CredentialsRequest) -> dict:
 @app.post("/auth/login")
 def login(request: CredentialsRequest) -> dict:
     return _auth_response(lambda: login_user(request.email, request.password))
+
+
+@app.post("/auth/login/request")
+def login_request(request: CredentialsRequest) -> dict:
+    try:
+        return request_login_otp(request.email, request.password)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/auth/login/verify")
+def login_verify(request: OtpVerifyRequest) -> dict:
+    return _auth_response(lambda: verify_login_otp(request.challenge_id, request.code))
 
 
 @app.post("/auth/google")
@@ -147,6 +182,35 @@ async def analyze_email(request: TextAnalysisRequest, authorization: str | None 
 def user_reports(authorization: str | None = Header(None)) -> list[AnalysisReport]:
     user = _current_user(authorization)
     return list_reports(user["id"])
+
+
+@app.get("/admin/users")
+def admin_users(authorization: str | None = Header(None)) -> dict:
+    _current_admin(authorization)
+    return {"users": list_admin_users()}
+
+
+@app.get("/admin/analyses")
+def admin_analyses(authorization: str | None = Header(None)) -> dict:
+    _current_admin(authorization)
+    analyses = list_admin_analyses()
+    return {"analyses": analyses}
+
+
+@app.get("/admin/summary")
+def admin_summary(authorization: str | None = Header(None)) -> dict:
+    _current_admin(authorization)
+    users = list_admin_users()
+    analyses = list_admin_analyses()
+    high_risk_levels = {"high", "critical", "malicious"}
+    image_reports = [item for item in analyses if item["media_type"] == "image"]
+    return {
+        "total_users": len(users),
+        "total_analyses": len(analyses),
+        "image_uploads": len(image_reports),
+        "high_risk_reports": sum(1 for item in analyses if str(item["risk_level"]).lower() in high_risk_levels),
+        "latest_image_reports": image_reports[:20],
+    }
 
 
 @app.get("/reports/{report_id}", response_model=AnalysisReport)

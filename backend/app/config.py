@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     reality_defender_api_key: str = Field("", validation_alias="REALITY_DEFENDER_API_KEY")
     auth_secret: str = Field("change-me-in-production", validation_alias="TRUTHLENS_AUTH_SECRET")
     google_client_id: str = Field("", validation_alias="GOOGLE_CLIENT_ID")
+    founder_admin_emails: str = Field("akshaykalakonda9@gmail.com", validation_alias="FOUNDER_ADMIN_EMAILS")
+    founder_admin_bootstrap_password: str = Field("", validation_alias="FOUNDER_ADMIN_BOOTSTRAP_PASSWORD")
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -29,6 +31,10 @@ class Settings(BaseSettings):
     @property
     def origin_regex(self) -> str:
         return r"https://.*\.vercel\.app|http://localhost:\d+"
+
+    @property
+    def admin_email_set(self) -> set[str]:
+        return {email.strip().lower() for email in self.founder_admin_emails.split(",") if email.strip()}
 
 
 @lru_cache

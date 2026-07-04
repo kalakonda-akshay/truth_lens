@@ -24,6 +24,9 @@ export function AuthForm({ mode }: { mode: "login" | "signup" | "forgot" }) {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [otp, setOtp] = useState("");
+  const [challengeId, setChallengeId] = useState("");
+  const [devOtp, setDevOtp] = useState("");
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
@@ -50,6 +53,16 @@ export function AuthForm({ mode }: { mode: "login" | "signup" | "forgot" }) {
         const data = await response.json();
         if (!response.ok) throw new Error(data.detail ?? "Recovery request failed.");
         setMessage(data.message);
+      } else if (mode === "login" && challengeId) {
+        const response = await authRequest("/auth/login/verify", { method: "POST", body: JSON.stringify({ challenge_id: challengeId, code: otp }) });
+        await complete(response);
+      } else if (mode === "login") {
+        const response = await authRequest("/auth/login/request", { method: "POST", body: JSON.stringify({ email, password }) });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail ?? "Login failed.");
+        setChallengeId(data.challenge_id);
+        setDevOtp(data.dev_otp ?? "");
+        setMessage(data.message ?? "Enter the OTP to continue.");
       } else {
         const response = await authRequest(`/auth/${mode}`, { method: "POST", body: JSON.stringify({ name, email, password }) });
         await complete(response);
@@ -94,9 +107,14 @@ export function AuthForm({ mode }: { mode: "login" | "signup" | "forgot" }) {
           {mode === "signup" && <input value={name} onChange={(e) => setName(e.target.value)} required placeholder="Full name" className="w-full rounded-xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-500" />}
           <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required placeholder="Email address" className="w-full rounded-xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-500" />
           {mode !== "forgot" && <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required minLength={8} placeholder="Password (8+ characters)" className="w-full rounded-xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-500" />}
+          {mode === "login" && challengeId && <input inputMode="numeric" value={otp} onChange={(e) => setOtp(e.target.value)} required minLength={6} maxLength={6} placeholder="Enter 6-digit OTP" className="w-full rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 font-bold tracking-widest outline-none focus:border-blue-500" />}
           {error && <p className="rounded-lg bg-red-50 p-3 text-sm font-semibold text-red-700">{error}</p>}
           {message && <p className="rounded-lg bg-emerald-50 p-3 text-sm font-semibold text-emerald-700">{message}</p>}
-          <button disabled={busy} className="w-full rounded-xl bg-blue-600 px-5 py-3 font-black text-white hover:bg-blue-700 disabled:opacity-60">{busy ? "Please wait..." : title}</button>
+          {devOtp && <p className="rounded-lg bg-slate-100 p-3 text-center text-sm font-black text-slate-700">Prototype OTP: {devOtp}</p>}
+          <button disabled={busy} className="relative w-full overflow-hidden rounded-xl bg-blue-600 px-5 py-3 font-black text-white hover:bg-blue-700 disabled:opacity-70">
+            {busy && <span className="absolute inset-y-0 left-0 w-1/2 animate-login-slide bg-white/20" />}
+            <span className="relative">{busy ? "Securing login..." : challengeId ? "Verify OTP" : title}</span>
+          </button>
         </form>
         {mode !== "forgot" && (
           <>

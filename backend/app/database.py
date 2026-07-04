@@ -36,6 +36,7 @@ def init_db() -> None:
                 password_hash TEXT,
                 avatar_url TEXT NOT NULL DEFAULT '',
                 provider TEXT NOT NULL DEFAULT 'email',
+                role TEXT NOT NULL DEFAULT 'member',
                 created_at TEXT NOT NULL
             )
             """
@@ -52,6 +53,19 @@ def init_db() -> None:
         )
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS otp_challenges (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                code_hash TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                consumed_at TEXT,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(user_id) REFERENCES users(id)
+            )
+            """
+        )
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS analyses (
                 id TEXT PRIMARY KEY,
                 filename TEXT NOT NULL,
@@ -61,6 +75,9 @@ def init_db() -> None:
             )
             """
         )
+        user_columns = {row["name"] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
+        if "role" not in user_columns:
+            conn.execute("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'member'")
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(analyses)").fetchall()}
         if "user_id" not in columns:
             conn.execute("ALTER TABLE analyses ADD COLUMN user_id TEXT")

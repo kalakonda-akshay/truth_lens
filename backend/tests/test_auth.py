@@ -41,6 +41,24 @@ class AuthTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             login_user("second@example.test", "wrong-password")
 
+    def test_otp_login_and_admin_role(self):
+        from app.services.auth import authenticate_token, request_login_otp, verify_login_otp, register_user
+
+        admin, _ = register_user("Founder", "akshaykalakonda9@gmail.com", "admin-pass-123")
+        self.assertEqual(admin["role"], "founder_admin")
+
+        challenge = request_login_otp("akshaykalakonda9@gmail.com", "admin-pass-123")
+        self.assertEqual(challenge["status"], "otp_required")
+        logged_in, token = verify_login_otp(challenge["challenge_id"], challenge["dev_otp"])
+        self.assertEqual(logged_in["role"], "founder_admin")
+        self.assertEqual(authenticate_token(token)["email"], "akshaykalakonda9@gmail.com")
+
+    def test_login_otp_requires_existing_registration(self):
+        from app.services.auth import request_login_otp
+
+        with self.assertRaisesRegex(ValueError, "register first"):
+            request_login_otp("missing@example.test", "password-123")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -28,3 +28,12 @@ body {
   box-shadow: 0 18px 50px rgba(15, 23, 42, 0.08);
   backdrop-filter: blur(18px);
 }
+
+@keyframes login-slide {
+  0% { transform: translateX(-110%); }
+  100% { transform: translateX(220%); }
+}
+
+.animate-login-slide {
+  animation: login-slide 1.1s ease-in-out infinite;
+}
