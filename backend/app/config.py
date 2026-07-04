@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     google_client_id: str = Field("", validation_alias="GOOGLE_CLIENT_ID")
     founder_admin_emails: str = Field("akshaykalakonda9@gmail.com", validation_alias="FOUNDER_ADMIN_EMAILS")
     founder_admin_bootstrap_password: str = Field("", validation_alias="FOUNDER_ADMIN_BOOTSTRAP_PASSWORD")
+    public_app_url: str = Field("http://localhost:3000", validation_alias="TRUTHLENS_PUBLIC_APP_URL")
 
     model_config = SettingsConfigDict(
         env_file=".env",

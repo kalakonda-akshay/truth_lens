@@ -326,6 +326,20 @@ function TruthLensReport({ report }: { report: AnalysisReport }) {
           <h3 className="font-black uppercase text-[#0b1b4f]">Disclaimer</h3>
           <p className="mt-3 text-xs leading-5 text-slate-600">{disclaimer}</p>
         </section>
+
+        <section className="rounded-xl border border-cyan-200 bg-cyan-50 p-5">
+          <h3 className="font-black uppercase text-[#0b1b4f]">Report Verification</h3>
+          <div className="mt-3 grid gap-3 text-xs md:grid-cols-[1fr_160px]">
+            <div className="space-y-2">
+              <p><span className="font-black">SHA-256 Hash:</span> <span className="break-all">{report.report_hash || "Generated when stored on backend"}</span></p>
+              <p><span className="font-black">Signature:</span> <span className="break-all">{report.report_signature || "Generated when stored on backend"}</span></p>
+              <p><span className="font-black">Verify:</span> <Link href={`/verify/${report.id}`} className="font-black text-blue-700 hover:text-blue-900">{report.verification_url || `/verify/${report.id}`}</Link></p>
+            </div>
+            <Link href={`/verify/${report.id}`} className="grid min-h-32 place-items-center rounded-xl border border-cyan-300 bg-white p-3 text-center text-[11px] font-black uppercase tracking-widest text-cyan-800">
+              Report<br />Verification<br />Code
+            </Link>
+          </div>
+        </section>
       </div>
 
       <footer className="bg-[#031225] px-8 py-5 text-center text-white">

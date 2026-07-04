@@ -10,6 +10,7 @@ from app.database import init_db
 from app.models import AnalysisReport
 from app.services.analyzer import analyze_email_text, analyze_upload, analyze_url_text
 from app.services.pdf import build_pdf
+from app.services.integrity import attach_integrity, verification_record
 from app.services.auth import (
     authenticate_token,
     admin_reset_user_password,
@@ -170,6 +171,7 @@ async def analyze(file: UploadFile = File(...), authorization: str | None = Head
     if not file.filename:
         raise HTTPException(status_code=400, detail="A media file is required.")
     report = analyze_upload(file.filename, file.content_type, file.file)
+    report = attach_integrity(report)
     user = _current_user(authorization, required=False)
     save_report(report, user["id"] if user else None)
     return report
@@ -180,6 +182,7 @@ async def analyze_url(request: TextAnalysisRequest, authorization: str | None = 
     if not request.content.strip():
         raise HTTPException(status_code=400, detail="A URL is required.")
     report = analyze_url_text(request.content.strip())
+    report = attach_integrity(report)
     user = _current_user(authorization, required=False)
     save_report(report, user["id"] if user else None)
     return report
@@ -190,6 +193,7 @@ async def analyze_email(request: TextAnalysisRequest, authorization: str | None 
     if not request.content.strip():
         raise HTTPException(status_code=400, detail="Email content is required.")
     report = analyze_email_text(request.content)
+    report = attach_integrity(report)
     user = _current_user(authorization, required=False)
     save_report(report, user["id"] if user else None)
     return report
@@ -245,6 +249,11 @@ def report(report_id: str) -> AnalysisReport:
     if stored is None:
         raise HTTPException(status_code=404, detail="Report not found.")
     return stored
+
+
+@app.get("/reports/{report_id}/verify")
+def verify_report(report_id: str) -> dict:
+    return verification_record(get_report(report_id))
 
 
 @app.get("/reports/{report_id}/pdf")

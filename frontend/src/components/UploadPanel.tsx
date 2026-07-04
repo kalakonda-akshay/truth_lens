@@ -14,6 +14,24 @@ const analysisModes = [
   { key: "email", label: "Emails", detail: "EML, TXT, Paste", Icon: FileText },
 ] as const;
 
+const demoSamples = {
+  url: [
+    "https://secure-paypa1-login.xyz/verify/password?redirect=http://evil.test",
+    "https://example.com/about",
+  ],
+  email: [
+    "From: Microsoft Security <support@gmail.com>\nSubject: URGENT account suspended\n\nDear customer, verify your account password immediately: https://secure-paypa1-login.xyz/verify/password",
+    "From: Team <updates@example.com>\nSubject: Weekly notes\n\nHello, here are the normal project updates for this week. No action required.",
+  ],
+};
+
+const progressSteps = [
+  [10, "Evidence received"],
+  [35, "Pre-processing input"],
+  [70, "Running forensic engine"],
+  [100, "Report generated"],
+] as const;
+
 function detectMediaType(file: File) {
   const extension = file.name.split(".").pop()?.toLowerCase();
   if (file.type.startsWith("image/") || ["jpg", "jpeg", "png", "webp"].includes(extension ?? "")) return "Image";
@@ -195,9 +213,27 @@ export function UploadPanel({ initialMode = "image", showModeSelector = true }: 
 
         {mode === "url" || mode === "email" ? (
           <div className="rounded-xl border border-slate-200 bg-slate-50 p-5">
-            <label className="text-xs font-black uppercase tracking-[0.16em] text-blue-700">
-              {mode === "url" ? "URL analysis" : "Email scam analysis"}
-            </label>
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <label className="text-xs font-black uppercase tracking-[0.16em] text-blue-700">
+                {mode === "url" ? "URL analysis" : "Email scam analysis"}
+              </label>
+              <div className="flex flex-wrap gap-2">
+                {demoSamples[mode].map((sample, index) => (
+                  <button
+                    key={index}
+                    type="button"
+                    onClick={() => {
+                      setTextInput(sample);
+                      setError("");
+                      setProgress(12);
+                    }}
+                    className="rounded-lg border border-blue-200 bg-white px-3 py-1.5 text-xs font-black text-blue-700 hover:bg-blue-600 hover:text-white"
+                  >
+                    {index === 0 ? "Use suspicious sample" : "Use safe sample"}
+                  </button>
+                ))}
+              </div>
+            </div>
             <textarea
               value={textInput}
               onChange={(event) => setTextInput(event.target.value)}
@@ -277,6 +313,23 @@ export function UploadPanel({ initialMode = "image", showModeSelector = true }: 
             </div>
             <div className="mt-4 h-2 overflow-hidden rounded-full bg-slate-200">
               <div className="h-full rounded-full bg-gradient-to-r from-blue-600 to-emerald-500 transition-all" style={{ width: `${progress}%` }} />
+            </div>
+          </div>
+        )}
+
+        {(progress > 0 || isAnalyzing) && (
+          <div className="mt-5 rounded-xl border border-slate-200 bg-white p-4">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <p className="text-sm font-black text-slate-900">Analysis progress</p>
+              <p className="text-xs font-bold text-slate-500">{progress}% complete</p>
+            </div>
+            <div className="mt-4 grid gap-3 sm:grid-cols-4">
+              {progressSteps.map(([threshold, label]) => (
+                <div key={label} className={`rounded-xl border p-3 text-xs font-bold ${progress >= threshold ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-slate-200 bg-slate-50 text-slate-500"}`}>
+                  <span className="mb-2 block h-2 rounded-full bg-current opacity-60" />
+                  {label}
+                </div>
+              ))}
             </div>
           </div>
         )}

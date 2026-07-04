@@ -72,3 +72,6 @@ class AnalysisReport(BaseModel):
         ]
     )
     awareness_message: str = "Do not forward unverified media"
+    report_hash: str = ""
+    report_signature: str = ""
+    verification_url: str = ""

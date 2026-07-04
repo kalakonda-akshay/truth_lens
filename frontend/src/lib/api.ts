@@ -71,6 +71,24 @@ export type AnalysisReport = {
   reasons_for_decision: string[];
   recommendations: string[];
   awareness_message: string;
+  report_hash: string;
+  report_signature: string;
+  verification_url: string;
+};
+
+export type VerificationRecord = {
+  status: string;
+  valid: boolean;
+  report_id: string;
+  report_hash: string;
+  signature: string;
+  verification_url: string;
+  media_type: string;
+  filename: string;
+  uploaded_at: string;
+  risk_level: string;
+  threat_classification: string;
+  authenticity_verdict: string;
 };
 
 export function normalizeReport(report: AnalysisReport): AnalysisReport {
@@ -108,6 +126,9 @@ export function normalizeReport(report: AnalysisReport): AnalysisReport {
       "Verify the media source before sharing.",
       "Request the original file when making high-impact decisions.",
     ],
+    report_hash: report.report_hash ?? "",
+    report_signature: report.report_signature ?? "",
+    verification_url: report.verification_url ?? "",
   };
 }
 
@@ -171,4 +192,16 @@ export async function fetchReport(id: string): Promise<AnalysisReport> {
     }
   }
   throw new Error("Unable to load report");
+}
+
+export async function fetchVerification(id: string): Promise<VerificationRecord> {
+  for (const endpoint of backendCandidates(`/reports/${id}/verify`)) {
+    try {
+      const response = await fetch(endpoint, { cache: "no-store" });
+      if (response.ok) return response.json();
+    } catch {
+      // Try the next endpoint.
+    }
+  }
+  throw new Error("Unable to verify report");
 }

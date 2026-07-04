@@ -238,6 +238,8 @@ def build_pdf(report: AnalysisReport) -> bytes:
                 ["Risk Level", report.scores.risk_level.upper()],
                 ["Threat Classification", report.threat_classification.upper()],
                 ["Model Confidence", f"{report.model_confidence}%"],
+                ["Report Hash", report.report_hash[:24] + "..." if report.report_hash else "Not generated"],
+                ["Verification URL", report.verification_url or "Not configured"],
                 *(
                     [
                         ["Detection Engine", str(report.audio_clone_detection.get("detection_engine", "Reality Defender"))],
@@ -297,6 +299,7 @@ def build_pdf(report: AnalysisReport) -> bytes:
                 ["Voice Clone Detected", report.voice_clone_detected],
                 ["Deepfake Detection", report.deepfake_detected],
                 ["Evidence Summary", report.evidence_summary],
+                ["Integrity Signature", report.report_signature[:24] + "..." if report.report_signature else "Not generated"],
             ],
             "#164e63",
         ),
