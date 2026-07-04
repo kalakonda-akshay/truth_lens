@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { KeyRound, ShieldCheck } from "lucide-react";
+import { Eye, EyeOff, KeyRound, ShieldCheck } from "lucide-react";
 import { authRequest, useAuth } from "@/lib/auth";
 
 export default function ChangePasswordPage() {
@@ -11,6 +11,7 @@ export default function ChangePasswordPage() {
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  const [showPasswords, setShowPasswords] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -52,9 +53,14 @@ export default function ChangePasswordPage() {
           {user?.password_reset_required ? "Your account was reset by an administrator. Enter the temporary password, then choose a new password." : "You can update your password here."}
         </div>
         <form onSubmit={submit} className="space-y-4">
-          <input type="password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} required placeholder="Current or temporary password" className="w-full rounded-xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-500" />
-          <input type="password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} required minLength={8} placeholder="New password (8+ characters)" className="w-full rounded-xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-500" />
-          <input type="password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} required minLength={8} placeholder="Confirm new password" className="w-full rounded-xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-500" />
+          <div className="relative">
+            <input type={showPasswords ? "text" : "password"} value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} required placeholder="Current or temporary password" className="w-full rounded-xl border border-slate-200 px-4 py-3 pr-12 outline-none focus:border-blue-500" />
+            <button type="button" onClick={() => setShowPasswords((value) => !value)} className="absolute right-3 top-1/2 -translate-y-1/2 rounded-lg p-1 text-slate-500 hover:bg-slate-100" aria-label={showPasswords ? "Hide passwords" : "Show passwords"}>
+              {showPasswords ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
+            </button>
+          </div>
+          <input type={showPasswords ? "text" : "password"} value={newPassword} onChange={(event) => setNewPassword(event.target.value)} required minLength={8} placeholder="New password (8+ characters)" className="w-full rounded-xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-500" />
+          <input type={showPasswords ? "text" : "password"} value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} required minLength={8} placeholder="Confirm new password" className="w-full rounded-xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-500" />
           {error && <p className="rounded-lg bg-red-50 p-3 text-sm font-semibold text-red-700">{error}</p>}
           <button disabled={busy} className="flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-5 py-3 font-black text-white hover:bg-blue-700 disabled:opacity-60">
             <KeyRound className="h-5 w-5" />{busy ? "Updating..." : "Update Password"}

@@ -4,7 +4,7 @@ import Link from "next/link";
 import Script from "next/script";
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ShieldCheck } from "lucide-react";
+import { Eye, EyeOff, ShieldCheck } from "lucide-react";
 import { authRequest, AuthUser, useAuth } from "@/lib/auth";
 
 declare global {
@@ -24,6 +24,7 @@ export function AuthForm({ mode }: { mode: "login" | "signup" | "forgot" }) {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [otp, setOtp] = useState("");
   const [challengeId, setChallengeId] = useState("");
   const [devOtp, setDevOtp] = useState("");
@@ -34,6 +35,7 @@ export function AuthForm({ mode }: { mode: "login" | "signup" | "forgot" }) {
   const { setSession } = useAuth();
   const router = useRouter();
   const googleClientId = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID ?? "";
+  const otpStep = mode === "login" && Boolean(challengeId);
 
   const complete = useCallback(async (response: Response) => {
     const data = await response.json();
@@ -105,9 +107,16 @@ export function AuthForm({ mode }: { mode: "login" | "signup" | "forgot" }) {
         <p className="mt-2 text-sm text-slate-500">Access user-linked cases, evidence and forensic reports.</p>
         <form onSubmit={submit} className="mt-6 space-y-4">
           {mode === "signup" && <input value={name} onChange={(e) => setName(e.target.value)} required placeholder="Full name" className="w-full rounded-xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-500" />}
-          <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required placeholder="Email address" className="w-full rounded-xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-500" />
-          {mode !== "forgot" && <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required minLength={8} placeholder="Password (8+ characters)" className="w-full rounded-xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-500" />}
-          {mode === "login" && challengeId && <input inputMode="numeric" value={otp} onChange={(e) => setOtp(e.target.value)} required minLength={6} maxLength={6} placeholder="Enter 6-digit OTP" className="w-full rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 font-bold tracking-widest outline-none focus:border-blue-500" />}
+          <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} disabled={otpStep} required placeholder="Email address" className="w-full rounded-xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-500 disabled:bg-slate-100 disabled:text-slate-500" />
+          {mode !== "forgot" && (
+            <div className="relative">
+              <input type={showPassword ? "text" : "password"} value={password} onChange={(e) => setPassword(e.target.value)} disabled={otpStep} autoComplete={mode === "login" ? "current-password" : "new-password"} required minLength={8} placeholder="Password (8+ characters)" className="w-full rounded-xl border border-slate-200 px-4 py-3 pr-12 outline-none focus:border-blue-500 disabled:bg-slate-100 disabled:text-slate-500" />
+              <button type="button" onClick={() => setShowPassword((value) => !value)} className="absolute right-3 top-1/2 -translate-y-1/2 rounded-lg p-1 text-slate-500 hover:bg-slate-100" aria-label={showPassword ? "Hide password" : "Show password"}>
+                {showPassword ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
+              </button>
+            </div>
+          )}
+          {otpStep && <input inputMode="numeric" pattern="[0-9]*" value={otp} onChange={(e) => setOtp(e.target.value.replace(/\D/g, "").slice(0, 6))} required minLength={6} maxLength={6} placeholder="Enter 6-digit OTP" className="w-full rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 font-bold tracking-widest outline-none focus:border-blue-500" />}
           {error && <p className="rounded-lg bg-red-50 p-3 text-sm font-semibold text-red-700">{error}</p>}
           {message && <p className="rounded-lg bg-emerald-50 p-3 text-sm font-semibold text-emerald-700">{message}</p>}
           {devOtp && <p className="rounded-lg bg-slate-100 p-3 text-center text-sm font-black text-slate-700">Prototype OTP: {devOtp}</p>}
